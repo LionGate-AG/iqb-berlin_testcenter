@@ -1,79 +1,112 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
+import { firstValueFrom } from 'rxjs';
 import { Testee } from './testee.interface';
 import { WebsocketGateway } from '../common/websocket.gateway';
 import { Command } from '../command/command.interface';
+import { RedisService } from '../redis/redis.service';
+import { CHANNEL, CommandMessage, KEY } from '../redis/redis.constants';
+
+const sleep = (ms: number): Promise<void> => new Promise(resolve => { setTimeout(resolve, ms); });
 
 @Injectable()
-export class TesteeService {
+export class TesteeService implements OnModuleInit {
+  private static readonly NOTIFY_MAX_RETRIES = 3;
+
   constructor(
     private readonly websocketGateway: WebsocketGateway,
+    private readonly redisService: RedisService,
     private readonly http: HttpService
   ) {
     this.websocketGateway.getDisconnectionObservable().subscribe((disconnected: string) => {
-      this.notifyDisconnection(disconnected);
-      this.removeTestee(disconnected);
+      // Read+notify the disconnect URI BEFORE the registration is deleted, then remove.
+      this.notifyDisconnection(disconnected)
+        .catch(() => {})
+        .then(() => this.removeTestee(disconnected))
+        .catch(e => this.logger.error(e.message));
     });
   }
 
   private readonly logger = new Logger(TesteeService.name);
 
-  private testees: { [token: string]: Testee } = {};
-
-  addTestee(testee: Testee): void {
-    this.testees[testee.token] = testee;
+  async onModuleInit(): Promise<void> {
+    await this.redisService.subscribe(CHANNEL.command, (msg: CommandMessage) => {
+      const localTokens = this.websocketGateway.filterLocalTokens(msg.tokens);
+      if (localTokens.length) {
+        this.websocketGateway.broadcastToRegistered(localTokens, 'commands', [msg.command]);
+      }
+    });
   }
 
-  removeTestee(testeeToken: string): void {
-    this.logger.log(`remove testee: ${testeeToken}`);
+  async addTestee(testee: Testee): Promise<void> {
+    await this.redisService.sadd(KEY.testeeTestId(testee.testId), testee.token);
+    await this.redisService.hset(KEY.testees, testee.token, testee);
+  }
 
-    if (typeof this.testees[testeeToken] !== 'undefined') {
-      delete this.testees[testeeToken];
+  async removeTestee(testeeToken: string): Promise<void> {
+    const testee = await this.redisService.hget<Testee>(KEY.testees, testeeToken);
+    if (testee) {
+      this.logger.log(`remove testee: ${testeeToken}`);
+      await this.redisService.srem(KEY.testeeTestId(testee.testId), testeeToken);
+      await this.redisService.hdel(KEY.testees, testeeToken);
     }
 
     this.websocketGateway.disconnectClient(testeeToken);
   }
 
-  getTestees(): Testee[] {
-    return Object.values(this.testees);
+  async getTestees(): Promise<Testee[]> {
+    return this.redisService.hgetall<Testee>(KEY.testees);
   }
 
-  notifyDisconnection(testeeToken: string): void {
-    if (typeof this.testees[testeeToken] === 'undefined') {
+  async notifyDisconnection(testeeToken: string): Promise<void> {
+    const testee = await this.redisService.hget<Testee>(KEY.testees, testeeToken);
+    if (!testee || !testee.disconnectNotificationUri) {
       return;
     }
-    if (this.testees[testeeToken].disconnectNotificationUri) {
-      const uri = new URL(this.testees[testeeToken].disconnectNotificationUri);
 
-      const disconnectNotificationUri = this.testees[testeeToken].disconnectNotificationUri.replace(uri.search, '');
-      const testMode = uri.searchParams.get('testMode');
-      const config = testMode ? { headers: { testMode } } : {};
+    const uri = new URL(testee.disconnectNotificationUri);
+    const logUri = testee.disconnectNotificationUri.replace(uri.search, '');
+    const testMode = uri.searchParams.get('testMode');
+    const config = testMode ? { headers: { testMode } } : {};
 
-      this.http.post(this.testees[testeeToken].disconnectNotificationUri, {}, config)
-        .subscribe(
-          () => {
-            this.logger.log(`sent connection-lost signal to ${disconnectNotificationUri}`);
-          },
-          error => {
-            this.logger.warn(`could not send connection-lost signal to ${disconnectNotificationUri}: ${error.message}`);
-          }
+    for (let attempt = 0; attempt < TesteeService.NOTIFY_MAX_RETRIES; attempt++) {
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        await firstValueFrom(this.http.post(testee.disconnectNotificationUri, {}, config));
+        this.logger.log(`sent connection-lost signal to ${logUri}`);
+        return;
+      } catch (error) {
+        const isLast = attempt === TesteeService.NOTIFY_MAX_RETRIES - 1;
+        this.logger.warn(
+          `could not send connection-lost signal to ${logUri} (attempt ${attempt + 1}): ${(error as Error).message}`
         );
+        if (isLast) {
+          return;
+        }
+        // eslint-disable-next-line no-await-in-loop
+        await sleep(2 ** attempt * 200); // exponential backoff: 200ms, 400ms, ...
+      }
     }
   }
 
-  broadcastCommandToTestees(command: Command, testIds: number[]) : void {
-    testIds.forEach((testId => {
-      this.websocketGateway.broadcastToRegistered(
-        Object.values(this.testees)
-          .filter(testee => testee.testId === testId)
-          .map(testee => testee.token),
-        'commands',
-        [command]
-      );
-    }));
+  async broadcastCommandToTestees(command: Command, testIds: number[]): Promise<void> {
+    // union of testee tokens across all addressed testIds (deduplicated)
+    const tokenLists = await Promise.all(testIds.map(testId => this.redisService.smembers(KEY.testeeTestId(testId))));
+    const tokens = [...new Set(tokenLists.flat())];
+    if (tokens.length === 0) {
+      return;
+    }
+
+    const { alive, dead } = await this.redisService.partitionByAlive(tokens);
+    await Promise.all(dead.map(token => this.removeTestee(token)));
+
+    await this.redisService.publish(CHANNEL.command, { command, tokens: alive } as CommandMessage);
   }
 
-  clean(): void {
-    this.testees = {};
+  async clean(): Promise<void> {
+    const testees = await this.redisService.hgetall<Testee>(KEY.testees);
+    const testIds = new Set<number>(testees.map(testee => testee.testId));
+    await Promise.all([...testIds].map(testId => this.redisService.del(KEY.testeeTestId(testId))));
+    await this.redisService.del(KEY.testees);
   }
 }

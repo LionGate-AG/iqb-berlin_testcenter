@@ -28,80 +28,52 @@ describe('CommandControler', () => {
     expect(commandController).toBeDefined();
   });
 
-  it('should throw invalid command data (no command property)', () => {
+  it('should throw invalid command data (no command property)', async () => {
     const mockNoCommand = {
-      body: {
-        testIds: [1, 2, 3],
-        arguments: 'some arguments',
-        timestamp: new Date()
-      }
+      body: { testIds: [1, 2, 3], arguments: 'some arguments', timestamp: 12 }
     } as Request;
 
-    expect(() => commandController.postCommand(mockNoCommand)).toThrow(HttpException);
-    expect(() => commandController.postCommand(mockNoCommand)).toThrow('invalid command data');
+    await expect(commandController.postCommand(mockNoCommand)).rejects.toThrow(HttpException);
+    await expect(commandController.postCommand(mockNoCommand)).rejects.toThrow('invalid command data');
   });
 
-  it('should throw invalid command data (malformed command)', () => {
-    const mockMalformedRequest = {
-      body: {
-        command: {
-          id: 12
-        }
-      }
-    } as Request;
+  it('should throw invalid command data (malformed command)', async () => {
+    const mockMalformedRequest = { body: { command: { id: 12 } } } as Request;
 
-    expect(() => commandController.postCommand(mockMalformedRequest)).toThrow(HttpException);
-    expect(() => commandController.postCommand(mockMalformedRequest)).toThrow('invalid command data');
+    await expect(commandController.postCommand(mockMalformedRequest)).rejects.toThrow(HttpException);
+    await expect(commandController.postCommand(mockMalformedRequest)).rejects.toThrow('invalid command data');
   });
 
-  it('should throw no testIds given (no testIds property)', () => {
+  it('should throw no testIds given (no testIds property)', async () => {
     const mockNoTestIDs = {
-      body: {
-        command: {
-          keyword: 'pause',
-          id: 12,
-          arguments: 'some arguments',
-          timestamp: new Date()
-        }
-      }
+      body: { command: { keyword: 'pause', id: 12, arguments: 'some arguments', timestamp: 12 } }
     } as Request;
 
-    expect(() => commandController.postCommand(mockNoTestIDs)).toThrow(HttpException);
-    expect(() => commandController.postCommand(mockNoTestIDs)).toThrow('no testIds given');
+    await expect(commandController.postCommand(mockNoTestIDs)).rejects.toThrow(HttpException);
+    await expect(commandController.postCommand(mockNoTestIDs)).rejects.toThrow('no testIds given');
   });
 
-  it('should throw no testIds given (array test)', () => {
+  it('should throw no testIds given (array test)', async () => {
     const mockNoArrayTestID = {
-      body: {
-        command: {
-          keyword: 'pause',
-          id: 12,
-          arguments: 'some arguments',
-          timestamp: new Date()
-        },
-        testIds: 4
-      }
+      body: { command: { keyword: 'pause', id: 12, arguments: 'some arguments', timestamp: 12 }, testIds: 4 }
     } as Request;
 
-    expect(() => commandController.postCommand(mockNoArrayTestID)).toThrow(HttpException);
-    expect(() => commandController.postCommand(mockNoArrayTestID)).toThrow('no testIds given');
+    await expect(commandController.postCommand(mockNoArrayTestID)).rejects.toThrow(HttpException);
+    await expect(commandController.postCommand(mockNoArrayTestID)).rejects.toThrow('no testIds given');
   });
 
-  it('Should not throw any errors (happy path)', () => {
+  it('Should not throw any errors (happy path)', async () => {
     const spyLogger = jest.spyOn(commandController['logger'], 'log');
     const mockValidRequest = {
       body: {
         command: {
-          keyword: 'pause',
-          id: 'string id',
-          arguments: ['arguments1', 'argument2'],
-          timestamp: 12
+          keyword: 'pause', id: 'string id', arguments: ['arguments1', 'argument2'], timestamp: 12
         },
         testIds: [5]
       }
     } as Request;
 
-    expect(commandController.postCommand(mockValidRequest)).toBeUndefined();
+    await expect(commandController.postCommand(mockValidRequest)).resolves.toBeUndefined();
     expect(spyLogger).toHaveBeenCalled();
     expect(mockTesteeService.broadcastCommandToTestees)
       .toHaveBeenCalledWith(mockValidRequest.body.command, mockValidRequest.body.testIds);
