@@ -14,26 +14,26 @@ export class TestSessionController {
   private readonly logger = new Logger(TestSessionController.name);
 
   @Post('/push/session-change')
-  pushSessionChange(@Req() request: Request): void {
+  async pushSessionChange(@Req() request: Request): Promise<void> {
     if (!isSessionChange(request.body)) {
       throw new HttpException('not session data', 400);
     }
 
     // this.logger.log('/push/session-change', JSON.stringify(request.body));
-    this.dataService.applySessionChange(request.body);
+    await this.dataService.applySessionChange(request.body);
   }
 
   @Post('/push/session-changes')
-  pushSessionChanges(@Req() request: Request): void {
+  async pushSessionChanges(@Req() request: Request): Promise<void> {
     if (!isSessionChangeArray(request.body)) {
       throw new HttpException('not session data', 400);
     }
 
-    this.dataService.applySessionChanges(request.body);
+    await this.dataService.applySessionChanges(request.body);
   }
 
   @Get('/test-sessions')
-  getTestSessions(): TestSessionChange[] {
+  getTestSessions(): Promise<TestSessionChange[]> {
     return this.dataService.getTestSessions();
   }
 }
