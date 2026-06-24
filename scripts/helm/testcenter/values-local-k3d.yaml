@@ -1,0 +1,55 @@
+# Local k3d overrides for testing the FULL testcenter chart on a single-node k3d cluster
+# with LOCALLY-BUILT + IMPORTED backend (php-fpm) and broadcaster (horizontally scalable) images.
+#
+# Usage:
+#   ArgoCD : set this file under spec.source.helm.valueFiles: [ values-local-k3d.yaml ]
+#   Helm   : helm upgrade --install tc scripts/helm/testcenter -n tc --create-namespace \
+#              -f scripts/helm/testcenter/values-local-k3d.yaml
+#
+# Prereqs — build + import the two local images into the cluster BEFORE deploying:
+#   docker build -f backend/Dockerfile     --target prod --build-arg REGISTRY_PATH="" -t iqbberlin/testcenter-backend:fpm-local .
+#   docker build -f broadcaster/Dockerfile --target prod --build-arg REGISTRY_PATH="" -t iqbberlin/testcenter-broadcaster:local .
+#   k3d image import iqbberlin/testcenter-backend:fpm-local     -c testcenter
+#   k3d image import iqbberlin/testcenter-broadcaster:local     -c testcenter
+#
+# The remaining images (frontend, file-server, db, redis, busybox) pull normally from Docker Hub
+# at the chart appVersion.
+
+image:
+  # -- Backend: use the locally-built + imported php-fpm image.
+  # IfNotPresent => kubelet uses the imported image and never tries to pull it from a registry.
+  backend:
+    registryPath: ""
+    tag: "fpm-local"
+    imagePullPolicy: IfNotPresent
+
+  # -- Broadcaster: use the locally-built + imported (horizontally scalable) image.
+  # IfNotPresent => never pulled; the imported image is used as-is.
+  broadcaster:
+    registryPath: ""
+    tag: "local"
+    imagePullPolicy: IfNotPresent
+
+ingress:
+  # No external ingress locally; reach the app via `kubectl port-forward` of the frontend service.
+  traefikEnabled: false
+  tlsEnabled: false
+  baseDomain: localhost
+
+persistence:
+  # k3d/k3s ships the rancher local-path provisioner; its StorageClass is "local-path"
+  # (the chart default "standard" does not exist on k3d, so PVCs would stay Pending).
+  longhornEnabled: false
+  backendPvcStorageClassName: local-path
+  backendConfigPvcStorageClassName: local-path
+  dbPvcStorageClassName: local-path
+
+deployment:
+  broadcaster:
+    # Run the broadcaster multi-pod via the HPA so horizontal scaling (shared broadcaster-redis
+    # state + non-sticky Service) is observable. k3s bundles metrics-server, which the HPA needs.
+    autoscaling:
+      enabled: true
+      minReplicas: 2
+      maxReplicas: 5
+      targetCPUUtilizationPercentage: 70
