@@ -2,6 +2,9 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {{ .Release.Name }}-backend
+  annotations:
+    # Start the backend only after the seed job (wave 1) has written config.ini.
+    argocd.argoproj.io/sync-wave: "2"
 spec:
   replicas: {{ .Values.deployment.backend.replicas }}
   selector:

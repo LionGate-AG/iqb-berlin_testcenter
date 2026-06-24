@@ -124,6 +124,10 @@ config:
     # References the `redisCacheFiles` anchor. When enabled, the backend
     # caches static files in Redis for faster access by the File Server.
     redisCacheFiles: *redisCacheFiles
+    # -- Minimum length for user passwords (applied at initialization)
+    passwordMinLength: 7
+    # -- Regex that user passwords must match (applied at initialization)
+    passwordRegexCheck: "/.*/"
 
   cacheServer:
     # -- Maximum memory allocation for Redis
@@ -183,6 +187,8 @@ secret:
     # PRODUCTION: Replace 'change_me' with a strong, randomly generated salt!
     # This salt is used for hashing user passwords in the application.
     passwordSalt: change_me
+    # -- Initial Sys-Admin password, created only on first initialization
+    adminInitPassword: user123
 
 # =============================================================================
 # INGRESS AND NETWORK EXPOSURE
