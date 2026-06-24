@@ -1,0 +1,18 @@
+{{- /* effective minimum replicas: HPA minReplicas when autoscaling, else the static replica count */ -}}
+{{- $minReplicas := .Values.deployment.broadcaster.replicas | int -}}
+{{- if .Values.deployment.broadcaster.autoscaling.enabled -}}
+{{- $minReplicas = .Values.deployment.broadcaster.autoscaling.minReplicas | int -}}
+{{- end -}}
+{{- if gt $minReplicas 1 }}
+# Only meaningful with 2+ pods. A PDB of minAvailable:1 with a single replica would block
+# all voluntary evictions (node drains), so it is created only when running multiple pods.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ .Release.Name }}-broadcaster-pdb
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}-broadcaster-pod
+{{- end }}

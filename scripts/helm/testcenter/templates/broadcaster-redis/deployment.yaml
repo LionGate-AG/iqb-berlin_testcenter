@@ -1,0 +1,79 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-broadcaster-redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}-broadcaster-redis-pod
+  template:
+    metadata:
+      labels:
+        app: {{ .Release.Name }}-broadcaster-redis-pod
+      annotations:
+        checksum/secret: {{ include (print $.Template.BasePath "/broadcaster-redis/secret.yaml") . | sha256sum }}
+    spec:
+      {{- if .Values.deployment.broadcasterRedis.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- .Values.deployment.broadcasterRedis.topologySpreadConstraints | toYaml | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 2000
+        fsGroup: 3000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: {{ .Release.Name }}-broadcaster-redis-container
+          image: "{{ .Values.image.broadcasterRedis.registryPath }}redis:{{ .Values.image.broadcasterRedis.tag }}"
+          imagePullPolicy: {{ .Values.image.broadcasterRedis.imagePullPolicy }}
+          securityContext:
+            runAsUser: 999
+            runAsGroup: 999
+            privileged: false
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          command: ["redis-server"]
+          # noeviction: this is a state store (registrations/sessions), not a cache - never drop keys.
+          args: [
+            "--requirepass", "$(REDIS_PASSWORD)",
+            "--maxmemory-policy", "noeviction",
+            "--save", '""',
+            "--appendonly", "no"
+          ]
+          ports:
+            - name: redis-container
+              containerPort: 6379
+          {{- if .Values.deployment.broadcasterRedis.resources }}
+          resources:
+            {{- .Values.deployment.broadcasterRedis.resources | toYaml | nindent 12 }}
+          {{- end }}
+          livenessProbe:
+            exec:
+              command:
+                - redis-cli
+                - ping
+            initialDelaySeconds: {{ .Values.deployment.broadcasterRedis.probes.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.deployment.broadcasterRedis.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ .Values.deployment.broadcasterRedis.probes.liveness.timeoutSeconds }}
+            successThreshold: {{ .Values.deployment.broadcasterRedis.probes.liveness.successThreshold }}
+            failureThreshold: {{ .Values.deployment.broadcasterRedis.probes.liveness.failureThreshold }}
+          readinessProbe:
+            exec:
+              command:
+                - redis-cli
+                - ping
+            periodSeconds: {{ .Values.deployment.broadcasterRedis.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.deployment.broadcasterRedis.probes.readiness.timeoutSeconds }}
+            successThreshold: {{ .Values.deployment.broadcasterRedis.probes.readiness.successThreshold }}
+            failureThreshold: {{ .Values.deployment.broadcasterRedis.probes.readiness.failureThreshold }}
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-broadcaster-redis-secret
+                  key: REDIS_PASSWORD
