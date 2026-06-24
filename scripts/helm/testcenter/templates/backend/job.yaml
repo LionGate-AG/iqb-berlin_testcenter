@@ -3,7 +3,17 @@ kind: Job
 metadata:
   name: {{ .Release.Name }}-backend-container-seed
   annotations:
+    # Plain Helm (`helm install/upgrade`): run as an install/upgrade hook and replace any
+    # previous run. (Under Helm there is no health-gating deadlock.)
     "helm.sh/hook": post-install,post-upgrade,post-rollback
+    "helm.sh/hook-delete-policy": before-hook-creation
+    # Argo CD: run during the Sync phase (NOT PostSync). PostSync waits for all resources to be
+    # healthy first, but the backend cannot become healthy until this job has written config.ini
+    # -> deadlock. Sync-wave 1 places it after the database (wave 0, gated on its readiness probe)
+    # and before the backend (wave 2), so config.ini exists before the backend starts.
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    argocd.argoproj.io/sync-wave: "1"
 spec:
   template:
     spec:
@@ -73,6 +83,21 @@ spec:
                 secretKeyRef:
                   name: {{ .Release.Name }}-backend-secret
                   key: PASSWORD_SALT
+            - name: PASSWORD_MIN_LENGTH
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ .Release.Name }}-backend-config
+                  key: PASSWORD_MIN_LENGTH
+            - name: PASSWORD_REGEX_CHECK
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ .Release.Name }}-backend-config
+                  key: PASSWORD_REGEX_CHECK
+            - name: ADMIN_INIT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-backend-secret
+                  key: ADMIN_INIT_PASSWORD
             - name: SKIP_READ_FILES
               value: "no"
             - name: SKIP_DB_INTEGRITY
