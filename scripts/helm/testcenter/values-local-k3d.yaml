@@ -1,0 +1,37 @@
+# Local k3d overrides for testing the FULL testcenter chart with a locally-built broadcaster image.
+# Usage (ArgoCD: reference this file under spec.source.helm.valueFiles; or with helm: -f values-local-k3d.yaml).
+#
+# Prereqs handled elsewhere:
+#   - build broadcaster image and `k3d image import` it into the cluster (see the test guide)
+#   - the other images (backend/frontend/db/redis/file-server) pull from Docker Hub normally
+
+image:
+  # Use the locally-built + imported broadcaster image instead of pulling from a registry.
+  broadcaster:
+    registryPath: ""
+    # tag you import into k3d (see guide: docker build ... -t iqbberlin/testcenter-broadcaster:local)
+    tag: "local"
+    # IfNotPresent so k8s uses the imported image and does NOT try to pull it from a registry
+    imagePullPolicy: IfNotPresent
+
+ingress:
+  # No external ingress for local testing; reach the app via `kubectl port-forward` the frontend svc.
+  traefikEnabled: false
+  baseDomain: localhost
+  tlsEnabled: false
+
+persistence:
+  longhornEnabled: false
+  # k3d/k3s ship the rancher local-path provisioner; its StorageClass is "local-path" (not "standard").
+  backendPvcStorageClassName: local-path
+  backendConfigPvcStorageClassName: local-path
+  dbPvcStorageClassName: local-path
+
+deployment:
+  broadcaster:
+    # Run multi-pod and let the HPA scale on CPU so horizontal scaling is observable.
+    autoscaling:
+      enabled: true
+      minReplicas: 2
+      maxReplicas: 5
+      targetCPUUtilizationPercentage: 70
