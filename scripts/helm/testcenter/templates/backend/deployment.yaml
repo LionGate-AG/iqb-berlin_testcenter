@@ -38,7 +38,7 @@ spec:
             capabilities:
               drop:
                 - ALL
-          command: [ "apache2-foreground" ]
+          command: [ "bash", "/run-server.sh" ]
           ports:
             - name: http-container
               containerPort: 8080
