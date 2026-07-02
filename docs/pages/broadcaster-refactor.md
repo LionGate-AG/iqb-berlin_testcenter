@@ -1,3 +1,7 @@
+---
+layout: default
+---
+
 # Broadcaster Refactor — Horizontal Scalability via Redis
 
 ## Goal
