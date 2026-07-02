@@ -1,3 +1,7 @@
+---
+layout: default
+---
+
 # Backend migration: Apache (mod_php) → nginx + php-fpm
 
 This document describes the migration of the testcenter **backend** web server from

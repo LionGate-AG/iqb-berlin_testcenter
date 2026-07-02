@@ -1,0 +1,7 @@
+# Jekyll build output and local toolchain — never commit these
+_site/
+.jekyll-cache/
+.jekyll-metadata
+# Bundler: locally-installed gems + machine-specific config (path: vendor/bundle)
+vendor/
+.bundle/
