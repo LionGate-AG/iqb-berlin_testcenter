@@ -47,6 +47,7 @@ There are two important files for the Testcenter. A file named **Testtaker** def
 
 * [Installation for Development](https://pages.cms.hu-berlin.de/iqb/testcenter/pages/installation-dev.html)
 * [Developer's Guide](https://pages.cms.hu-berlin.de/iqb/testcenter/pages/developer-guide.html)
+* [Broadcaster Refactor — Horizontal Scalability via Redis](https://pages.cms.hu-berlin.de/iqb/testcenter/pages/broadcaster-refactor.html)
 * [Backend migration: Apache (mod_php) → nginx + php-fpm](https://pages.cms.hu-berlin.de/iqb/testcenter/pages/php-fpm-migration.html)
 
 ### API Documentation

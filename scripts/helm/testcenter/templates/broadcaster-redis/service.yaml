@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-broadcaster-redis
+spec:
+  selector:
+    app: {{ .Release.Name }}-broadcaster-redis-pod
+  ports:
+    - port: 6379
+      targetPort: redis-container
