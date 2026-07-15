@@ -7,5 +7,3 @@ data:
   BROADCASTER_ENABLED: {{ .Values.config.backend.broadcasterEnabled | quote }}
   FILE_SERVER_ENABLED: {{ .Values.config.backend.fileServerEnabled | quote }}
   REDIS_CACHE_FILES: {{ .Values.config.backend.redisCacheFiles | quote }}
-  PASSWORD_MIN_LENGTH: {{ .Values.config.backend.passwordMinLength | quote }}
-  PASSWORD_REGEX_CHECK: {{ .Values.config.backend.passwordRegexCheck | quote }}

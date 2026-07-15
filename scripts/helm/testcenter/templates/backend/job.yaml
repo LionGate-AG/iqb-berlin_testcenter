@@ -83,21 +83,6 @@ spec:
                 secretKeyRef:
                   name: {{ .Release.Name }}-backend-secret
                   key: PASSWORD_SALT
-            - name: PASSWORD_MIN_LENGTH
-              valueFrom:
-                configMapKeyRef:
-                  name: {{ .Release.Name }}-backend-config
-                  key: PASSWORD_MIN_LENGTH
-            - name: PASSWORD_REGEX_CHECK
-              valueFrom:
-                configMapKeyRef:
-                  name: {{ .Release.Name }}-backend-config
-                  key: PASSWORD_REGEX_CHECK
-            - name: ADMIN_INIT_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Release.Name }}-backend-secret
-                  key: ADMIN_INIT_PASSWORD
             - name: SKIP_READ_FILES
               value: "no"
             - name: SKIP_DB_INTEGRITY

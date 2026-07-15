@@ -153,34 +153,12 @@ Commit: *updated helm chart*
 Commit: *fixed env variables for tc-backend seed job and postSync issue*
 
 While verifying the migration on a local **k3d + Argo CD** cluster, the backend pod crash-looped with
-`Application config file is missing!`. Investigation found **two pre-existing chart bugs** (present on
+`Application config file is missing!`. Investigation found a **pre-existing chart bug** (present on
 `master` and the broadcaster branch too — not introduced by this migration) that prevented the seed
 Job from ever producing `config.ini`. The backend has no env of its own; it boots entirely from the
 `config.ini` that the seed Job (`initialize_only.sh`) writes to the shared config PVC.
 
-### Bug 1 — seed Job was missing required env vars
-
-`initialize.php` → `SystemConfig::readFromEnvironment()` requires these with **no default**:
-`MYSQL_*`, `PASSWORD_SALT`, `PASSWORD_MIN_LENGTH`, `PASSWORD_REGEX_CHECK`, `ADMIN_INIT_PASSWORD`,
-`REDIS_*`. The seed Job set `PASSWORD_SALT` but omitted the other three password/admin vars, so it
-failed before writing `config.ini` (`Environment-variable missing: PASSWORD_MIN_LENGTH`).
-Docker-compose worked only because `docker-compose.yml` already provided them.
-
-Fixed the idiomatic way (matching how the chart handles other env), routing by value type:
-
-- **`scripts/helm/testcenter/values.yaml`** — added `config.backend.passwordMinLength: 7`,
-  `config.backend.passwordRegexCheck: "/.*/"`, and `secret.backend.adminInitPassword: user123`.
-- **`scripts/helm/testcenter/templates/backend/configmap.yaml`** — added `PASSWORD_MIN_LENGTH` and
-  `PASSWORD_REGEX_CHECK` (non-secret config).
-- **`scripts/helm/testcenter/templates/backend/secret.yaml`** — added `ADMIN_INIT_PASSWORD` (it is a
-  bootstrap credential).
-- **`scripts/helm/testcenter/templates/backend/job.yaml`** — the seed Job now pulls all three via
-  `configMapKeyRef` / `secretKeyRef` instead of literals.
-
-> `ADMIN_INIT_PASSWORD` only governs the **first-ever** initialization (it creates the `super`
-> Sys-Admin). Changing it later has no effect on an existing database.
-
-### Bug 2 — seed Job never ran automatically under Argo CD (deadlock)
+### Seed Job never ran automatically under Argo CD (deadlock)
 
 The seed Job was annotated `helm.sh/hook: post-install,post-upgrade,post-rollback`, which Argo CD maps
 to a **PostSync** hook. PostSync only runs after all resources are **Healthy** — but the backend can't
