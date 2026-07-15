@@ -12,8 +12,11 @@
     "php": {
       "command": "php -v"
     },
-    "apache": {
-      "command": "apachectl -v"
+    "php-fpm": {
+      "command": "php-fpm -v"
+    },
+    "nginx": {
+      "command": "nginx -v"
     },
     "slim": {
       "stage": "backend-composer",
