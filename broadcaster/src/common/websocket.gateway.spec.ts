@@ -5,6 +5,8 @@ import { IncomingMessage } from 'http';
 import { isObservable } from 'rxjs';
 import { WebsocketGateway } from './websocket.gateway';
 import { BroadcastingEvent } from './interfaces';
+import { RedisService } from '../redis/redis.service';
+import { FakeRedisService } from '../redis/redis.fake';
 
 let websocketGateway : WebsocketGateway;
 
@@ -36,21 +38,15 @@ describe('websocketGateway handle connection and disconnection (single client)',
     terminate: jest.fn(),
     readyState: 1
   } as unknown as WebSocket;
-  const incomingMessage = {
-    url: 'www.test.de/ws?token=clientToken'
-  } as IncomingMessage;
-  const incomingMessage2 = {
-    url: 'www.test.de/ws?token=clientToken2'
-  } as IncomingMessage;
-  const incomingMessage3 = {
-    url: 'www.test.de/ws?token=clientToken3'
-  } as IncomingMessage;
+  const incomingMessage = { url: 'www.test.de/ws?token=clientToken' } as IncomingMessage;
+  const incomingMessage2 = { url: 'www.test.de/ws?token=clientToken2' } as IncomingMessage;
+  const incomingMessage3 = { url: 'www.test.de/ws?token=clientToken3' } as IncomingMessage;
   const expectedTokens = ['clientToken', 'clientToken2', 'clientToken3'];
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
-      providers: [WebsocketGateway]
-    }).compile();
+      providers: [WebsocketGateway, RedisService]
+    }).overrideProvider(RedisService).useValue(new FakeRedisService()).compile();
 
     websocketGateway = module.get<WebsocketGateway>(WebsocketGateway);
   });
@@ -61,9 +57,8 @@ describe('websocketGateway handle connection and disconnection (single client)',
 
   it('it should handle a connection', () => {
     const spyLogger = jest.spyOn(websocketGateway['logger'], 'log');
-    expect(websocketGateway.handleConnection(client, incomingMessage)).toBeUndefined(); // TODO ??
+    expect(websocketGateway.handleConnection(client, incomingMessage)).toBeUndefined();
     expect(websocketGateway['clients'].get('clientToken')).toStrictEqual(client);
-    expect(websocketGateway['clientsCount$'].next).toBeDefined(); // TODO warum auf next testen?
     expect(websocketGateway['clientsCount$'].value).toEqual(1);
     expect(spyLogger).toHaveBeenCalled();
   });
@@ -72,7 +67,6 @@ describe('websocketGateway handle connection and disconnection (single client)',
     const spyLogger = jest.spyOn(websocketGateway['logger'], 'log');
     expect(websocketGateway.handleConnection(client as WebSocket, incomingMessage)).toBeUndefined();
     expect(websocketGateway['clients'].get('clientToken')).toStrictEqual(client);
-    expect(websocketGateway['clientsCount$'].next).toBeDefined();
     expect(websocketGateway['clientsCount$'].value).toEqual(1);
     expect(websocketGateway.handleConnection(client2, incomingMessage2)).toBeUndefined();
     expect(websocketGateway['clients'].get('clientToken2')).toStrictEqual(client2);
@@ -84,8 +78,6 @@ describe('websocketGateway handle connection and disconnection (single client)',
     websocketGateway.handleConnection(client, incomingMessage);
     expect(websocketGateway.handleDisconnect(client)).toBeUndefined();
     expect(websocketGateway['clients'].get('clientToken')).toBeUndefined();
-    // TODO wenn der client nicht bekannt ist, sollte auch nix gefeuert werden(?)
-    // expect(websocketGateway['clientLost$'].value).toStrictEqual('clientToken');
     expect(websocketGateway['clientsCount$'].value).toEqual(0);
   });
 
@@ -138,6 +130,13 @@ describe('websocketGateway handle connection and disconnection (single client)',
     websocketGateway.handleConnection(client2, incomingMessage2);
     websocketGateway.handleConnection(client3, incomingMessage3);
     expect(websocketGateway.getClientTokens()).toStrictEqual(expectedTokens);
+  });
+
+  it('should filter to only locally-held tokens', () => {
+    websocketGateway.handleConnection(client, incomingMessage);
+    websocketGateway.handleConnection(client2, incomingMessage2);
+    expect(websocketGateway.filterLocalTokens(['clientToken', 'clientToken2', 'somewhere-else']))
+      .toStrictEqual(['clientToken', 'clientToken2']);
   });
 
   it('should broadcast to all registered', () => {

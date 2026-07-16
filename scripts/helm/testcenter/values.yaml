@@ -50,6 +50,17 @@ image:
     # -- Redis version tag. Use specific versions for production
     tag: "8.0-bookworm"
 
+  # -- Configuration for the Broadcaster's dedicated Redis image (Redis 8.0)
+  # Standalone Redis used ONLY by the broadcaster for shared state + cross-pod pub/sub.
+  # Kept separate from cacheServer (which serves the backend/file-server).
+  broadcasterRedis:
+    # -- Image pull policy. Use 'IfNotPresent' for production stability
+    imagePullPolicy: Always
+    # -- Registry path for Redis image. Leave empty for Docker Hub official images
+    registryPath: ""
+    # -- Redis version tag. Use specific versions for production
+    tag: "8.0-bookworm"
+
   # -- Configuration for the file server image (Nginx-based with Redis caching)
   # The file server handles serving test files, resources, and static content.
   # It includes Redis integration for authorization while accessing files.
@@ -194,6 +205,11 @@ secret:
     # PRODUCTION: Replace 'change_me' with a strong, randomly generated password!
     # Redis password protects cached data and prevents unauthorized access.
     redisPassword: &redisPassword change_me
+
+  broadcasterRedis:
+    # -- Password for the broadcaster's dedicated Redis.
+    # References the `redisPassword` anchor to reuse the same value (separate Redis instance).
+    redisPassword: *redisPassword
 
   fileServer:
     # -- Redis password for file server cache access
@@ -476,6 +492,20 @@ deployment:
   # The Broadcaster handles real-time WebSocket connections for live updates,
   # test monitoring, and real-time communication features.
   broadcaster:
+    # -- Number of broadcaster replicas (used only when autoscaling is disabled).
+    # The broadcaster is now horizontally scalable: all state + fan-out go through broadcaster-redis,
+    # so any pod can terminate any WebSocket. Safe to run 2+ behind the (non-sticky) Service.
+    replicas: 1
+    # -- Graceful shutdown window. Must exceed preStop sleep (5s) + onModuleDestroy drain (~5s).
+    terminationGracePeriodSeconds: 30
+    # -- Horizontal Pod Autoscaler (CPU only). When enabled, `replicas` is ignored and the HPA
+    # manages the replica count; a PodDisruptionBudget is added when minReplicas > 1.
+    autoscaling:
+      enabled: false
+      minReplicas: 2
+      maxReplicas: 5
+      # -- Target average CPU utilization (%) across broadcaster pods
+      targetCPUUtilizationPercentage: 70
     # -- Resource allocation for Broadcaster pods
     # Broadcaster needs moderate resources for WebSocket connections
     resources:
@@ -528,6 +558,39 @@ deployment:
     #     labelSelector:
     #       matchLabels:
     #         app: release-name-broadcaster-pod
+
+  # -- Broadcaster Redis deployment configuration (Redis 8.0)
+  # Dedicated, standalone Redis for broadcaster shared state + cross-pod pub/sub.
+  broadcasterRedis:
+    # -- Resource allocation for the broadcaster Redis pod
+    resources:
+      limits:
+        cpu: 500m
+        memory: 512Mi
+      requests:
+        cpu: 100m
+        memory: 128Mi
+    # -- Health probe configuration (redis-cli ping)
+    probes:
+      liveness:
+        initialDelaySeconds: 5
+        periodSeconds: 10
+        timeoutSeconds: 3
+        successThreshold: 1
+        failureThreshold: 3
+      readiness:
+        periodSeconds: 5
+        timeoutSeconds: 3
+        successThreshold: 1
+        failureThreshold: 3
+    # -- Topology spread constraints for the broadcaster Redis deployment
+    topologySpreadConstraints:
+    #   - maxSkew: 1
+    #     topologyKey: kubernetes.io/hostname
+    #     whenUnsatisfiable: DoNotSchedule
+    #     labelSelector:
+    #       matchLabels:
+    #         app: release-name-broadcaster-redis-pod
 
   # -- Cache server deployment configuration (Redis 8.0)
   # Redis is used for caching file content, session data, and improving performance.

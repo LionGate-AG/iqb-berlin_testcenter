@@ -8,11 +8,12 @@ use PHPUnit\Framework\TestCase;
  */
 class ServerTest extends TestCase {
   function test_getUrl() {
-    // a scenario like most local installations with one vhost, vhost base dir is /var/www
+    // a scenario where the app is served from a sub-path and the real script path
+    // (including the sub-folder) is passed through to php-fpm via SCRIPT_NAME
     $expected = 'http://localhost/a-sub-folder/another-sub-folder';
     $actual = Server::getUrl([
       "REDIRECT_STATUS" => "200",
-      "SERVER_SOFTWARE" => "Apache/2.4.38 (Debian)",
+      "SERVER_SOFTWARE" => "nginx/1.26",
       "SERVER_NAME" => "localhost",
       "SERVER_ADDR" => " => =>1",
       "SERVER_PORT" => "80",
@@ -64,7 +65,7 @@ class ServerTest extends TestCase {
   }
 
   function test_getUrlWithHTTPS() {
-    // a scenario https is enabled, vhost base dir is /var/www/testcenter-dir
+    // a scenario where TLS is terminated at the server (HTTPS on), app served from the root
     $expected = 'https://a-nice-testcenter.de';
     $actual = Server::getUrl([
       "CRIPT_URL" => "/index.php",
@@ -72,7 +73,7 @@ class ServerTest extends TestCase {
       "HTTPS" => "on",
       "SSL_TLS_SNI" => "a-nice-testcenter.de",
       "HTTP_HOST" => "a-nice-testcenter.de",
-      "SERVER_SOFTWARE" => "Apache/2.4.38 (Debian)",
+      "SERVER_SOFTWARE" => "nginx/1.26",
       "SERVER_NAME" => "a-nice-testcenter.de",
       "SERVER_ADDR" => "1.2.3.4",
       "SERVER_PORT" => "443",
