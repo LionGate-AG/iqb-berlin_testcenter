@@ -89,6 +89,11 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     await Promise.allSettled([this.pub.quit(), this.sub.quit()]);
   }
 
+  // ---- health ----
+  async ping(): Promise<string> {
+    return this.pub.ping();
+  }
+
   // ---- pub/sub ----
   async publish(channel: string, payload: unknown): Promise<void> {
     await this.pub.publish(channel, JSON.stringify(payload));

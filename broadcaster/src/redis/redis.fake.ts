@@ -22,6 +22,10 @@ export class FakeRedisService {
     return this.sets.get(key)!;
   }
 
+  async ping(): Promise<string> {
+    return 'PONG';
+  }
+
   async hset(key: string, field: string, value: unknown): Promise<void> {
     this.hash(key).set(field, JSON.stringify(value));
   }

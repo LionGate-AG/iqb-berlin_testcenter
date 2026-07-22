@@ -31,4 +31,14 @@ export class SystemController {
   root(): void {
     this.logger.log('ping');
   }
+
+  // Cheap readiness check: confirms Redis is reachable without the cost of /testees'
+  // full HGETALL, which scales with live testee count and was slow enough under load
+  // to fail the readiness probe on every pod at once (see the incident this fixed).
+  @Get('/health')
+  @HttpCode(200)
+  async health(): Promise<string> {
+    await this.redisService.ping();
+    return 'ok';
+  }
 }
