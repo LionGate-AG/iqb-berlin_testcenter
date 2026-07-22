@@ -50,7 +50,12 @@ class BroadcastService {
       CURLOPT_RETURNTRANSFER => true,
       CURLOPT_ENCODING => "",
       CURLOPT_MAXREDIRS => 10,
-      CURLOPT_TIMEOUT => 5,
+      // Bounds how long a degraded/unreachable broadcaster can hold an FPM worker
+      // hostage. Was 5s with no connect timeout -- under broadcaster saturation that
+      // stalled worker slots long enough to exhaust the pool and 503 unrelated
+      // requests (including /session/login, which triggers this call on every login).
+      CURLOPT_CONNECTTIMEOUT => 1,
+      CURLOPT_TIMEOUT => 2,
       CURLOPT_FOLLOWLOCATION => true,
       CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
       CURLOPT_CUSTOMREQUEST => $verb,

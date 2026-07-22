@@ -168,7 +168,10 @@ class SessionController extends Controller {
         }
       }
     }
-    BroadcastService::sessionChanges($sessionChanges);
+
+    if (!empty($sessionChanges)) {
+      BroadcastService::sessionChanges($sessionChanges);
+    }
   }
 
   private static function getWorkspace(int $workspaceId): Workspace {
