@@ -150,6 +150,9 @@ class WorkspaceController extends Controller {
     $auth = $request->getHeader('Authorization');
     if (!$auth) return $response->withStatus(401);
     $token = $_ENV["TESTTAKER_TOKEN"];
+    // TODO(SKNRW-391): REMOTE_ADDR check below is a no-op for all inputs due to operator
+    // precedence (`!` binds before `===`), inherited verbatim from the old _BY fork during
+    // migration. The Bearer token check is this endpoint's only real protection currently.
     if (!$token || !$_SERVER['REMOTE_ADDR'] === '127.0.0.1' || !in_array('Bearer '.$token, $auth)) return $response->withStatus(403);
     $filename = $request->getAttribute('filename');
     $workspace = new Workspace((int) $request->getAttribute('ws_id'));
@@ -180,6 +183,7 @@ class WorkspaceController extends Controller {
     $auth = $request->getHeader('Authorization');
     if (!$auth) return $response->withStatus(401);
     $token = $_ENV["TESTTAKER_TOKEN"];
+    // TODO(SKNRW-391): REMOTE_ADDR check is a no-op here too, see putTesttaker() above.
     if (!$token || !$_SERVER['REMOTE_ADDR'] === '127.0.0.1' || !in_array('Bearer '.$token, $auth)) return $response->withStatus(403);
     $workspace = new Workspace((int) $request->getAttribute('ws_id'));
     $testtaker = 'Testtakers/'.$request->getAttribute('filename');
