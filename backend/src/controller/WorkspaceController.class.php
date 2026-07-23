@@ -146,6 +146,56 @@ class WorkspaceController extends Controller {
     return $response->withBody($fileStream);
   }
 
+  public static function putTesttaker(Request $request, Response $response): Response {
+    $auth = $request->getHeader('Authorization');
+    if (!$auth) return $response->withStatus(401);
+    $token = $_ENV["TESTTAKER_TOKEN"];
+    if (!$token || !$_SERVER['REMOTE_ADDR'] === '127.0.0.1' || !in_array('Bearer '.$token, $auth)) return $response->withStatus(403);
+    $filename = $request->getAttribute('filename');
+    $workspace = new Workspace((int) $request->getAttribute('ws_id'));
+    file_put_contents($workspace->getWorkspacePath().'/'.$request->getAttribute('filename'), $request->getBody());
+    $filesToImport = [$filename];
+    $importedFilesReports = $workspace->importUncategorizedFiles($filesToImport);
+    $workspace->setWorkspaceHash();
+    $loginsAffected = false;
+    $containsErrors = false;
+    foreach ($importedFilesReports as $localPath => $report) {
+      $containsErrors = ($containsErrors or !empty($importedFilesReports[$localPath]['error']));
+      $loginsAffected = ($loginsAffected or ($containsErrors and ($importedFilesReports[$localPath]['type'] == 'Testtakers')));
+      $importedFilesReports[$localPath] = array_splice(
+        $report,
+        1
+      ); // revert to current structure for output so not to needlessly change the API
+    }
+
+    if ($loginsAffected) {
+      BroadcastService::send('system/clean');
+    }
+
+    $warnings = $importedFilesReports[$filename]['warning'];
+    return $response->withStatus($containsErrors ? 500 : ($warnings && in_array('File of name `'.$filename.'` did already exist and was overwritten.', $warnings)?204:201));
+  }
+
+  public static function deleteTesttaker(Request $request, Response $response): Response {
+    $auth = $request->getHeader('Authorization');
+    if (!$auth) return $response->withStatus(401);
+    $token = $_ENV["TESTTAKER_TOKEN"];
+    if (!$token || !$_SERVER['REMOTE_ADDR'] === '127.0.0.1' || !in_array('Bearer '.$token, $auth)) return $response->withStatus(403);
+    $workspace = new Workspace((int) $request->getAttribute('ws_id'));
+    $testtaker = 'Testtakers/'.$request->getAttribute('filename');
+    $deletionReport = $workspace->deleteFiles([$testtaker]);
+
+    foreach ($deletionReport->deleted as $deletedFile) {
+      list($type) = explode('/', $deletedFile);
+      if ($type == 'Testtakers') {
+        BroadcastService::send('system/clean');
+        break;
+      }
+    }
+    $workspace->setWorkspaceHash();
+    return $response->withStatus(in_array($testtaker, $deletionReport->deleted)?204:(in_array($testtaker, $deletionReport->did_not_exist)?404:500));
+  }
+
   public static function postFile(Request $request, Response $response): Response {
     set_time_limit(600); // because password hashing may take a lot of time if many testtakers are provided
     $workspaceId = (int) $request->getAttribute('ws_id');

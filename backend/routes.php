@@ -207,6 +207,9 @@ $app->group('/workspace', function (RouteCollectorProxy $group) {
 })
   ->add(new RequireToken('admin'));
 
+$app->put('/workspace/{ws_id}/testtakers/{filename}', [WorkspaceController::class, 'putTesttaker']);
+$app->delete('/workspace/{ws_id}/testtakers/{filename}', [WorkspaceController::class, 'deleteTesttaker']);
+
 $app->group('/user', function (RouteCollectorProxy $group) {
   $group->get('/{user_id}/workspaces', [UserController::class, 'getWorkspaces']);
 
