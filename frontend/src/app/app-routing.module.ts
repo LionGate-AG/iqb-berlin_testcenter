@@ -15,7 +15,8 @@ import {
   StarterActivateGuard,
   StudyMonitorActivateGuard,
   SuperAdminComponentActivateGuard,
-  TestComponentActivateGuard
+  TestComponentActivateGuard,
+  TokenLoginActivateGuard
 } from './app-route-guards';
 import { PageNotFoundComponent } from './app-root/page-not-found/page-not-found.component';
 import { GenericInfoPageComponent } from './app-root/generic-info-page/generic-info-page.component';
@@ -136,6 +137,11 @@ const routes: Routes = [
     }
   },
   {
+    path: 'r/token-login/:token',
+    component: PageNotFoundComponent,
+    canActivate: [TokenLoginActivateGuard]
+  },
+  {
     path: '**',
     component: PageNotFoundComponent,
     canActivate: [DirectLoginActivateGuard]
@@ -150,7 +156,8 @@ const routes: Routes = [
   exports: [RouterModule],
   providers: [RouteDispatcherActivateGuard, DirectLoginActivateGuard,
     CodeInputComponentActivateGuard, AdminComponentActivateGuard,
-    SuperAdminComponentActivateGuard, TestComponentActivateGuard
+    SuperAdminComponentActivateGuard, TestComponentActivateGuard,
+    TokenLoginActivateGuard
   ]
 })
 export class AppRoutingModule { }
