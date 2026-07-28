@@ -3,7 +3,8 @@ import { Injectable } from '@angular/core';
 import {
   ActivatedRouteSnapshot, RedirectCommand, Router, RouterStateSnapshot, UrlTree
 } from '@angular/router';
-import { map } from 'rxjs/operators';
+import { catchError, map } from 'rxjs/operators';
+import { of } from 'rxjs';
 import { MainDataService } from './shared/shared.module';
 import { AuthData } from './app.interfaces';
 import { BackendService } from './backend.service';
@@ -86,6 +87,29 @@ export class DirectLoginActivateGuard {
     // if entering anything else than url/#/<username>/... this featur does not work - you will be routed to the literal
     // route, likely leading to a '404 not found'
     return true;
+  }
+}
+
+@Injectable()
+export class TokenLoginActivateGuard {
+  constructor(private mds: MainDataService, private bs: BackendService, private router: Router) { }
+
+  canActivate(next: ActivatedRouteSnapshot) {
+    const token = next.paramMap.get('token');
+    if (!token) {
+      return this.router.createUrlTree(['/r/login']);
+    }
+
+    // prime the AuthInterceptor with a minimal AuthData so it attaches the AuthToken header
+    // to the getSessionData() call below, then hydrate the full AuthData from the token
+    this.mds.setAuthData({ token } as AuthData);
+    return this.bs.getSessionData().pipe(
+      map(fullAuthData => {
+        this.mds.setAuthData(fullAuthData);
+        return this.router.createUrlTree(['/r']);
+      }),
+      catchError(() => of(this.router.createUrlTree(['/r/login'])))
+    );
   }
 }
 
