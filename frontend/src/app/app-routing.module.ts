@@ -14,7 +14,8 @@ import {
   StarterActivateGuard,
   StudyMonitorActivateGuard,
   SuperAdminComponentActivateGuard,
-  TestComponentActivateGuard
+  TestComponentActivateGuard,
+  TokenLoginActivateGuard
 } from './app-route-guards';
 import { RouteDispatcherComponent } from './app-root/route-dispatcher/route-dispatcher.component';
 import { GenericInfoPageComponent } from './app-root/generic-info-page/generic-info-page.component';
@@ -135,6 +136,11 @@ const routes: Routes = [
     }
   },
   {
+    path: 'r/token-login/:token',
+    component: RouteDispatcherComponent,
+    canActivate: [TokenLoginActivateGuard]
+  },
+  {
     path: '**',
     component: RouteDispatcherComponent,
     canActivate: [DirectLoginActivateGuard]
@@ -149,7 +155,8 @@ const routes: Routes = [
   exports: [RouterModule],
   providers: [RouteDispatcherActivateGuard, DirectLoginActivateGuard,
     CodeInputComponentActivateGuard, AdminComponentActivateGuard,
-    SuperAdminComponentActivateGuard, TestComponentActivateGuard
+    SuperAdminComponentActivateGuard, TestComponentActivateGuard,
+    TokenLoginActivateGuard
   ]
 })
 export class AppRoutingModule { }
