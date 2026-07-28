@@ -22,6 +22,13 @@ export class WebsocketGateway implements
   private static readonly MAX_CONNECTIONS = 10000;
   private static readonly HEARTBEAT_INTERVAL = 30000;
   private static readonly SHUTDOWN_GRACE_MS = 5000;
+  // How many clients the heartbeat sweep processes before yielding back to the event
+  // loop. Without this, a large simultaneous-disconnect burst (e.g. an upstream outage
+  // severing many sockets at once) gets discovered and cleaned up in one synchronous
+  // pass over `clients`, blocking the whole pod -- including its own health probes --
+  // for as long as the sweep takes. Observed: ~430 clients processed in ~430ms with the
+  // old per-client log line; chunking bounds this regardless of burst size.
+  private static readonly HEARTBEAT_BATCH_SIZE = 500;
 
   @WebSocketServer()
   private server!: Server; // magically injected
@@ -33,6 +40,8 @@ export class WebsocketGateway implements
   private clientsCount$: BehaviorSubject<number> = new BehaviorSubject<number>(0);
   private clientLost$: Subject<string> = new Subject<string>();
   private heartbeatInterval: NodeJS.Timeout | null = null;
+  // Guards against a second sweep starting while a very large one is still running.
+  private heartbeatSweepRunning = false;
 
   constructor(private readonly redisService: RedisService) {}
 
@@ -53,21 +62,49 @@ export class WebsocketGateway implements
   }
 
   private startHeartbeat() {
-    this.heartbeatInterval = setInterval(() => {
-      this.clients.forEach((ws, token) => {
-        if (!this.aliveClients.has(ws)) {
-          this.logger.warn(`Client ${token} inactive, terminating.`);
-          this.removeLocalClient(token, ws);
-          ws.terminate();
-          return;
-        }
+    this.heartbeatInterval = setInterval(() => this.onHeartbeatTick(), WebsocketGateway.HEARTBEAT_INTERVAL);
+  }
 
+  private onHeartbeatTick(): void {
+    if (this.heartbeatSweepRunning) {
+      this.logger.warn('Heartbeat sweep still running from the previous tick, skipping.');
+      return;
+    }
+    this.heartbeatSweepRunning = true;
+    this.runHeartbeatSweep()
+      .catch(e => this.logger.error(`Heartbeat sweep failed: ${(e as Error).message}`))
+      .finally(() => { this.heartbeatSweepRunning = false; });
+  }
+
+  private async runHeartbeatSweep(): Promise<void> {
+    let staleCount = 0;
+    let sinceYield = 0;
+
+    for (const [token, ws] of this.clients) {
+      if (!this.aliveClients.has(ws)) {
+        this.removeLocalClient(token, ws);
+        ws.terminate();
+        staleCount += 1;
+      } else {
         this.aliveClients.delete(ws);
         // Refresh the cluster-wide liveness marker for sockets this pod holds.
         this.redisService.setClientAlive(token).catch(() => {});
         ws.ping();
-      });
-    }, WebsocketGateway.HEARTBEAT_INTERVAL);
+      }
+
+      sinceYield += 1;
+      if (sinceYield >= WebsocketGateway.HEARTBEAT_BATCH_SIZE) {
+        sinceYield = 0;
+        // eslint-disable-next-line no-await-in-loop
+        await new Promise<void>(resolve => { setImmediate(resolve); });
+      }
+    }
+
+    // One summary line per tick instead of one per stale client -- logging each
+    // individually was the actual cost of the blocking incident this fixes.
+    if (staleCount > 0) {
+      this.logger.warn(`Heartbeat: terminated ${staleCount} inactive client(s).`);
+    }
   }
 
   handleConnection(client: WebSocket, message: IncomingMessage): void {
