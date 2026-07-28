@@ -129,6 +129,13 @@ export class MainDataService {
     localStorage.setItem(localStorageAuthDataKey, JSON.stringify(authData));
   }
 
+  // fully clears auth state (in-memory subject AND localStorage) back to null, without navigating away -
+  // use this to undo a partial/primed setAuthData() call that never got hydrated into a full, valid AuthData
+  clearAuthData(): void {
+    this._authData$.next(null);
+    localStorage.removeItem(localStorageAuthDataKey);
+  }
+
   logOut(): void {
     this.cts.restoreDefault(true);
     this.bs.deleteSession()
