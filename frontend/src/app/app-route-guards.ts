@@ -104,11 +104,18 @@ export class TokenLoginActivateGuard {
     // to the getSessionData() call below, then hydrate the full AuthData from the token
     this.mds.setAuthData({ token } as AuthData);
     return this.bs.getSessionData().pipe(
+      catchError(() => {
+        // the primed token was invalid/expired - clear it so it isn't mistaken for a valid session on the next page load
+        this.mds.clearAuthData();
+        return of(null);
+      }),
       map(fullAuthData => {
+        if (!fullAuthData) {
+          return this.router.createUrlTree(['/r/login']);
+        }
         this.mds.setAuthData(fullAuthData);
         return this.router.createUrlTree(['/r']);
-      }),
-      catchError(() => of(this.router.createUrlTree(['/r/login'])))
+      })
     );
   }
 }
