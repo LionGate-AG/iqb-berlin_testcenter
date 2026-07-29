@@ -213,6 +213,30 @@ class WorkspaceController extends Controller {
     return $response->withJson($data);
   }
 
+  public static function getBookletFiles(Request $request, Response $response): Response {
+    $auth = $request->getHeader('Authorization');
+    if (!$auth) return $response->withStatus(401);
+    $token = $_ENV['ANSWERS_TOKEN'];
+    if (!$token || !in_array('Bearer '.$token, $auth)) return $response->withStatus(403);
+
+    $workspaceId = (int) $request->getAttribute('ws_id');
+    $bookletIds = RequestHelper::getRequiredField($request, 'bookletIds');
+
+    $data = self::adminDAO()->getBookletFiles($workspaceId, $bookletIds);
+    return $response->withJson($data);
+  }
+
+  public static function getTestIds(Request $request, Response $response): Response {
+    $auth = $request->getHeader('Authorization');
+    if (!$auth) return $response->withStatus(401);
+    $token = $_ENV['ANSWERS_TOKEN'];
+    if (!$token || !in_array('Bearer '.$token, $auth)) return $response->withStatus(403);
+
+    $workspaceId = (int) $request->getAttribute('ws_id');
+    $testIds = self::adminDAO()->getTestIdsOfWorkspace($workspaceId);
+    return $response->withJson($testIds);
+  }
+
   public static function postFile(Request $request, Response $response): Response {
     set_time_limit(600); // because password hashing may take a lot of time if many testtakers are provided
     $workspaceId = (int) $request->getAttribute('ws_id');

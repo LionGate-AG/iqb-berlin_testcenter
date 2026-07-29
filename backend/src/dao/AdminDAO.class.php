@@ -444,6 +444,115 @@ class AdminDAO extends DAO {
     return ['answers' => (object) $answers, 'booklets' => (object) $booklets];
   }
 
+  /**
+   * @param int $workspaceId
+   * @param string[] $bookletIds files.id values (Booklet-type) to resolve dependencies for
+   * @return array<string, array{name: string, label: string, workspaceId: int, unitDefinition?: mixed, codingScheme?: mixed, playerVersion?: array, playerPath?: string, metaData?: mixed}>
+   */
+  public function getBookletFiles(int $workspaceId, array $bookletIds): array {
+    if (!$bookletIds) {
+      return (object) [];
+    }
+
+    $placeholders = implode(',', array_fill(0, count($bookletIds), '?'));
+    $bindParams = array_merge([$workspaceId], $bookletIds, [$workspaceId]);
+
+    $rows = $this->_(<<<EOT
+      WITH distinct_booklet_resources AS (
+        SELECT DISTINCT fr.workspace_id AS workspace_id, fr.object_name AS object_name, fr.object_type AS object_type
+        FROM files f
+        INNER JOIN file_relations fr
+          ON fr.workspace_id = f.workspace_id AND fr.subject_name = f.name AND fr.subject_type = f.type
+        WHERE f.workspace_id = ? AND f.id IN ($placeholders)
+      )
+      SELECT
+        f.name AS name,
+        f.id AS fileId,
+        f.label AS label,
+        player_file.version_mayor AS playerMajor,
+        player_file.version_minor AS playerMinor,
+        player_file.version_patch AS playerPatch,
+        fr_all.object_name AS objectName,
+        fr_all.object_type AS objectType,
+        fr_all.relationship_type AS relationshipType
+      FROM files f
+      INNER JOIN file_relations fr_all
+        ON fr_all.workspace_id = f.workspace_id AND fr_all.subject_name = f.name AND fr_all.subject_type = f.type
+      INNER JOIN distinct_booklet_resources dbr
+        ON dbr.workspace_id = fr_all.workspace_id AND dbr.object_name = fr_all.subject_name
+      LEFT JOIN file_relations fr_uses_player
+        ON fr_uses_player.workspace_id = f.workspace_id AND fr_uses_player.subject_name = f.name
+          AND fr_uses_player.subject_type = f.type AND fr_uses_player.relationship_type = 'usesPlayer'
+      LEFT JOIN files player_file
+        ON player_file.workspace_id = fr_uses_player.workspace_id AND player_file.name = fr_uses_player.object_name
+          AND player_file.type = fr_uses_player.object_type
+      WHERE f.workspace_id = ?
+        AND EXISTS (
+          SELECT 1 FROM file_relations fr_uses_scheme
+          WHERE fr_uses_scheme.workspace_id = f.workspace_id AND fr_uses_scheme.subject_name = f.name
+            AND fr_uses_scheme.subject_type = f.type AND fr_uses_scheme.relationship_type = 'usesScheme'
+        )
+      EOT,
+      $bindParams,
+      true
+    );
+
+    $result = [];
+    foreach ($rows as $row) {
+      $fileId = $row['fileId'];
+      $result[$fileId] ??= [
+        'name' => $row['name'],
+        'label' => $row['label'],
+        'workspaceId' => $workspaceId,
+      ];
+
+      if ($row['relationshipType'] === 'usesPlayer') {
+        $result[$fileId]['playerVersion'] = [
+          'major' => $row['playerMajor'] !== null ? (int) $row['playerMajor'] : null,
+          'minor' => $row['playerMinor'] !== null ? (int) $row['playerMinor'] : null,
+          'patch' => $row['playerPatch'] !== null ? (int) $row['playerPatch'] : null,
+        ];
+        $result[$fileId]['playerPath'] = "ws_{$workspaceId}/{$row['objectName']}";
+      } elseif ($row['relationshipType'] === 'isDefinedBy' || $row['relationshipType'] === 'usesScheme') {
+        $filePath = DATA_DIR . "/ws_{$workspaceId}/{$row['objectType']}/{$row['objectName']}";
+        $content = @file_get_contents($filePath);
+        $decoded = $content !== false ? json_decode($content, true) : null;
+        $key = $row['relationshipType'] === 'isDefinedBy' ? 'unitDefinition' : 'codingScheme';
+        $result[$fileId][$key] = $decoded;
+      }
+    }
+
+    foreach ($result as $fileId => &$unit) {
+      $unitName = preg_replace('/\.xml$/i', '', $unit['name']);
+      $vomdPath = DATA_DIR . "/ws_{$workspaceId}/Resource/{$unitName}.vomd";
+      $vomdContent = @file_get_contents($vomdPath);
+      if ($vomdContent !== false) {
+        $unit['metaData'] = json_decode($vomdContent, true);
+      }
+    }
+    unset($unit);
+
+    return $result;
+  }
+
+  /**
+   * @param int $workspaceId
+   * @return int[] distinct tests.id values belonging to this workspace
+   */
+  public function getTestIdsOfWorkspace(int $workspaceId): array {
+    $rows = $this->_(
+      'select distinct t.id as testId
+         from tests t
+         left join person_sessions ps on t.person_id = ps.id
+         left join login_sessions ls on ps.login_sessions_id = ls.id
+        where ls.workspace_id = :workspaceId',
+      [':workspaceId' => $workspaceId],
+      true
+    );
+
+    return array_map(fn($row) => (int) $row['testId'], $rows);
+  }
+
   private function getUnitState(int $testId, string $unitName): array {
     $unitData = $this->_("
       select
