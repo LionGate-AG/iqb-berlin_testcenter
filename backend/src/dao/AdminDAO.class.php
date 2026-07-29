@@ -449,7 +449,7 @@ class AdminDAO extends DAO {
    * @param string[] $bookletIds files.id values (Booklet-type) to resolve dependencies for
    * @return array<string, array{name: string, label: string, workspaceId: int, unitDefinition?: mixed, codingScheme?: mixed, playerVersion?: array, playerPath?: string, metaData?: mixed}>
    */
-  public function getBookletFiles(int $workspaceId, array $bookletIds): array {
+  public function getBookletFiles(int $workspaceId, array $bookletIds): array|object {
     if (!$bookletIds) {
       return (object) [];
     }
