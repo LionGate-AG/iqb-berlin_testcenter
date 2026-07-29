@@ -392,6 +392,58 @@ class AdminDAO extends DAO {
     return $groupedSessions;
   }
 
+  /**
+   * @param int $workspaceId
+   * @param string[] $codes person_sessions.code values to fetch answers for
+   * @return array{answers: array, booklets: array}
+   */
+  public function getAnswersForTestees(int $workspaceId, array $codes): array {
+    if (!$codes) {
+      return ['answers' => (object) [], 'booklets' => (object) []];
+    }
+
+    $placeholders = implode(',', array_fill(0, count($codes), '?'));
+    $bindParams = array_merge([$workspaceId], $codes);
+
+    $rows = $this->_(<<<EOT
+      select
+        person_sessions.code,
+        tests.id as testId,
+        tests.name as bookletName,
+        tests.label as bookletLabel,
+        tests.file_id as bookletFileId,
+        unit_data.unit_name as unitName,
+        unit_data.part_id as partId,
+        unit_data.content
+      from person_sessions
+        inner join login_sessions on person_sessions.login_sessions_id = login_sessions.id
+        inner join tests on tests.person_id = person_sessions.id
+        inner join unit_data on unit_data.test_id = tests.id
+      where
+        login_sessions.workspace_id = ?
+        and person_sessions.code in ($placeholders)
+      EOT,
+      $bindParams,
+      true
+    );
+
+    $answers = [];
+    $booklets = [];
+    foreach ($rows as $row) {
+      $answers[$row['code']]['booklets'][$row['bookletFileId']]['bookletLabel'] ??= $row['bookletLabel'] ?? $row['bookletFileId'];
+      $answers[$row['code']]['booklets'][$row['bookletFileId']]['testId'] ??= (int) $row['testId'];
+      $answers[$row['code']]['booklets'][$row['bookletFileId']]['units'][$row['unitName']]['dataParts'][$row['partId']] = $row['content'];
+
+      $booklets[$row['bookletName']]['label'] ??= $row['bookletLabel'];
+      $booklets[$row['bookletName']]['fileId'] ??= $row['bookletFileId'];
+      if (!in_array($row['unitName'], $booklets[$row['bookletName']]['units'] ?? [])) {
+        $booklets[$row['bookletName']]['units'][] = $row['unitName'];
+      }
+    }
+
+    return ['answers' => (object) $answers, 'booklets' => (object) $booklets];
+  }
+
   private function getUnitState(int $testId, string $unitName): array {
     $unitData = $this->_("
       select

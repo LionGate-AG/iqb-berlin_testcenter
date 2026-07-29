@@ -209,6 +209,7 @@ $app->group('/workspace', function (RouteCollectorProxy $group) {
 
 $app->put('/workspace/{ws_id}/testtakers/{filename}', [WorkspaceController::class, 'putTesttaker']);
 $app->delete('/workspace/{ws_id}/testtakers/{filename}', [WorkspaceController::class, 'deleteTesttaker']);
+$app->post('/workspace/{ws_id}/answers', [WorkspaceController::class, 'getAnswers']);
 
 $app->group('/user', function (RouteCollectorProxy $group) {
   $group->get('/{user_id}/workspaces', [UserController::class, 'getWorkspaces']);
