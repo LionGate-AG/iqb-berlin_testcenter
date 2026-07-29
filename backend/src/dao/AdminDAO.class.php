@@ -502,7 +502,7 @@ class AdminDAO extends DAO {
       $fileId = $row['fileId'];
       $result[$fileId] ??= [
         'name' => $row['name'],
-        'label' => $row['label'],
+        'label' => $row['label'] ?? '',
         'workspaceId' => $workspaceId,
       ];
 
@@ -516,6 +516,9 @@ class AdminDAO extends DAO {
       } elseif ($row['relationshipType'] === 'isDefinedBy' || $row['relationshipType'] === 'usesScheme') {
         $filePath = DATA_DIR . "/ws_{$workspaceId}/{$row['objectType']}/{$row['objectName']}";
         $content = @file_get_contents($filePath);
+        if ($content === false) {
+          error_log("getBookletFiles: failed to read file at {$filePath}");
+        }
         $decoded = $content !== false ? json_decode($content, true) : null;
         $key = $row['relationshipType'] === 'isDefinedBy' ? 'unitDefinition' : 'codingScheme';
         $result[$fileId][$key] = $decoded;
