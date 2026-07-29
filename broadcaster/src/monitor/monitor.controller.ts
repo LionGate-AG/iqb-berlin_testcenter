@@ -14,27 +14,27 @@ export class MonitorController {
   private readonly logger = new Logger(MonitorController.name);
 
   @Post('/monitor/register')
-  monitorRegister(@Req() request: Request): void {
+  async monitorRegister(@Req() request: Request): Promise<void> {
     if (!isMonitor(request.body)) {
       throw new HttpException('not monitor data', 400);
     }
 
     this.logger.log(`monitor registered:${JSON.stringify(request.body)}`);
-    this.dataService.addMonitor(request.body);
+    await this.dataService.addMonitor(request.body);
   }
 
   @Post('/monitor/unregister')
-  monitorUnregister(@Req() request: Request): void {
+  async monitorUnregister(@Req() request: Request): Promise<void> {
     if (!('token' in request.body)) {
       throw new HttpException('no token in body', 400);
     }
 
     this.logger.log('monitor unregistered:', request.body);
-    this.dataService.removeMonitor(request.body.token);
+    await this.dataService.removeMonitor(request.body.token);
   }
 
   @Get('/monitors')
-  monitors(@Req() request: Request): Monitor[] {
+  monitors(@Req() request: Request): Promise<Monitor[]> {
     return this.dataService.getMonitors();
   }
 

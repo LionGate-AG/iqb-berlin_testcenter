@@ -14,7 +14,7 @@ export class CommandController {
   private readonly logger = new Logger(CommandController.name);
 
   @Post('/command')
-  postCommand(@Req() request: Request): void {
+  async postCommand(@Req() request: Request): Promise<void> {
     if ((typeof request.body.command === 'undefined') || !isCommand(request.body.command)) {
       throw new HttpException('invalid command data', 400);
     }
@@ -25,6 +25,6 @@ export class CommandController {
 
     this.logger.log('/command', request.body);
 
-    this.testeeService.broadcastCommandToTestees(request.body.command, request.body.testIds);
+    await this.testeeService.broadcastCommandToTestees(request.body.command, request.body.testIds);
   }
 }

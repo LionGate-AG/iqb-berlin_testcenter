@@ -14,6 +14,8 @@ async function bootstrap() {
   );
   app.disable('x-powered-by', 'X-Powered-By');
   app.useWebSocketAdapter(new WsAdapter(app));
+  // enable onModuleDestroy hooks (graceful WebSocket shutdown + Redis quit) on SIGTERM/SIGINT
+  app.enableShutdownHooks();
   await app.listen(3000);
   // eslint-disable-next-line no-console
   console.log(`Broadcaster is running (Debug-Level: ${isDevelopment ? 'dev' : 'prod'})`);

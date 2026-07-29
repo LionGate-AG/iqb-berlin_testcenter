@@ -9,64 +9,130 @@ import { BehaviorSubject, Observable, Subject } from 'rxjs';
 import { map } from 'rxjs/operators';
 import { Server, WebSocket } from 'ws';
 import { IncomingMessage } from 'http';
-import { Logger } from '@nestjs/common';
+import { Logger, OnModuleDestroy } from '@nestjs/common';
 import { BroadcastingEvent } from './interfaces';
+import { RedisService } from '../redis/redis.service';
+
+const sleep = (ms: number): Promise<void> => new Promise(resolve => { setTimeout(resolve, ms); });
 
 @WebSocketGateway({ path: '/ws' })
-export class WebsocketGateway implements OnGatewayConnection, OnGatewayDisconnect, OnGatewayInit {
+export class WebsocketGateway implements
+  OnGatewayConnection, OnGatewayDisconnect, OnGatewayInit, OnModuleDestroy {
   private readonly logger = new Logger(WebsocketGateway.name);
   private static readonly MAX_CONNECTIONS = 10000;
   private static readonly HEARTBEAT_INTERVAL = 30000;
+  private static readonly SHUTDOWN_GRACE_MS = 5000;
+  // How many clients the heartbeat sweep processes before yielding back to the event
+  // loop. Without this, a large simultaneous-disconnect burst (e.g. an upstream outage
+  // severing many sockets at once) gets discovered and cleaned up in one synchronous
+  // pass over `clients`, blocking the whole pod -- including its own health probes --
+  // for as long as the sweep takes. Observed: ~430 clients processed in ~430ms with the
+  // old per-client log line; chunking bounds this regardless of burst size.
+  private static readonly HEARTBEAT_BATCH_SIZE = 500;
 
   @WebSocketServer()
   private server!: Server; // magically injected
 
-  private clients = new Map<string, WebSocket & { isAlive?: boolean }>();
+  // LOCAL only: the sockets this pod personally terminates. Never shared across pods.
+  private clients = new Map<string, WebSocket>();
+  // Tracks which local sockets answered the last ping (avoids stashing flags on the ws object).
+  private aliveClients = new WeakSet<WebSocket>();
   private clientsCount$: BehaviorSubject<number> = new BehaviorSubject<number>(0);
   private clientLost$: Subject<string> = new Subject<string>();
   private heartbeatInterval: NodeJS.Timeout | null = null;
+  // Guards against a second sweep starting while a very large one is still running.
+  private heartbeatSweepRunning = false;
+
+  constructor(private readonly redisService: RedisService) {}
 
   afterInit(server: Server) {
     this.startHeartbeat();
   }
 
-  private startHeartbeat() {
-    this.heartbeatInterval = setInterval(() => {
-      this.clients.forEach((ws, token) => {
-        if (ws.isAlive === false) {
-          this.logger.warn(`Client ${token} inactive, terminating.`);
-          this.clients.delete(token);
-          return ws.terminate();
-        }
-
-        ws.isAlive = false;
-        ws.ping();
-      });
-    }, WebsocketGateway.HEARTBEAT_INTERVAL);
+  async onModuleDestroy(): Promise<void> {
+    // Graceful shutdown: stop heartbeat and close all local sockets so clients reconnect to a
+    // surviving pod, then wait a moment for them to notice the close before the process exits.
+    if (this.heartbeatInterval) {
+      clearInterval(this.heartbeatInterval);
+      this.heartbeatInterval = null;
+    }
+    this.logger.log(`shutting down: disconnecting ${this.clients.size} local clients`);
+    this.disconnectAll();
+    await sleep(WebsocketGateway.SHUTDOWN_GRACE_MS);
   }
 
-  handleConnection(client: WebSocket & { isAlive?: boolean }, message: IncomingMessage): void {
+  private startHeartbeat() {
+    this.heartbeatInterval = setInterval(() => this.onHeartbeatTick(), WebsocketGateway.HEARTBEAT_INTERVAL);
+  }
+
+  private onHeartbeatTick(): void {
+    if (this.heartbeatSweepRunning) {
+      this.logger.warn('Heartbeat sweep still running from the previous tick, skipping.');
+      return;
+    }
+    this.heartbeatSweepRunning = true;
+    this.runHeartbeatSweep()
+      .catch(e => this.logger.error(`Heartbeat sweep failed: ${(e as Error).message}`))
+      .finally(() => { this.heartbeatSweepRunning = false; });
+  }
+
+  private async runHeartbeatSweep(): Promise<void> {
+    let staleCount = 0;
+    let sinceYield = 0;
+
+    for (const [token, ws] of this.clients) {
+      if (!this.aliveClients.has(ws)) {
+        this.removeLocalClient(token, ws);
+        ws.terminate();
+        staleCount += 1;
+      } else {
+        this.aliveClients.delete(ws);
+        // Refresh the cluster-wide liveness marker for sockets this pod holds.
+        this.redisService.setClientAlive(token).catch(() => {});
+        ws.ping();
+      }
+
+      sinceYield += 1;
+      if (sinceYield >= WebsocketGateway.HEARTBEAT_BATCH_SIZE) {
+        sinceYield = 0;
+        // eslint-disable-next-line no-await-in-loop
+        await new Promise<void>(resolve => { setImmediate(resolve); });
+      }
+    }
+
+    // One summary line per tick instead of one per stale client -- logging each
+    // individually was the actual cost of the blocking incident this fixes.
+    if (staleCount > 0) {
+      this.logger.warn(`Heartbeat: terminated ${staleCount} inactive client(s).`);
+    }
+  }
+
+  handleConnection(client: WebSocket, message: IncomingMessage): void {
     if (this.clients.size >= WebsocketGateway.MAX_CONNECTIONS) {
       this.logger.error('Max connections reached. Rejecting client.');
       client.close(1013, 'Try again later');
       return;
     }
 
+    let token: string;
     try {
-      const token = WebsocketGateway.getTokenFromUrl(message.url as string);
-
-      client.isAlive = true;
-      client.on('pong', () => {
-        client.isAlive = true;
-      });
-
-      this.clients.set(token, client);
-      this.clientsCount$.next(this.clients.size);
-      this.logger.log(`client connected: ${token}`);
+      token = WebsocketGateway.getTokenFromUrl(message.url as string);
     } catch (e) {
       this.logger.error('Connection rejected due to invalid token', e);
       client.close(1008, 'Invalid token');
+      return;
     }
+
+    this.aliveClients.add(client);
+    client.on('pong', () => {
+      this.aliveClients.add(client);
+    });
+
+    this.clients.set(token, client);
+    this.clientsCount$.next(this.clients.size);
+    this.redisService.setClientAlive(token).catch(() => {});
+    this.redisService.pushConnection(token).catch(() => {});
+    this.logger.log(`client connected: ${token}`);
   }
 
   static getTokenFromUrl(url: string): string {
@@ -82,19 +148,27 @@ export class WebsocketGateway implements OnGatewayConnection, OnGatewayDisconnec
     let disconnectedToken = '';
     for (const [token, ws] of this.clients.entries()) {
       if (ws === client) {
-        this.clients.delete(token);
         disconnectedToken = token;
         break;
       }
     }
 
     if (disconnectedToken !== '') {
+      this.removeLocalClient(disconnectedToken, client);
       this.clientLost$.next(disconnectedToken);
-      this.clientsCount$.next(this.clients.size);
       this.logger.log(`client disconnected: ${disconnectedToken}`);
     }
   }
 
+  private removeLocalClient(token: string, ws: WebSocket): void {
+    this.clients.delete(token);
+    this.aliveClients.delete(ws);
+    this.clientsCount$.next(this.clients.size);
+    this.redisService.deleteClientAlive(token).catch(() => {});
+    this.redisService.removeConnection(token).catch(() => {});
+  }
+
+  /** Send to the given tokens, but only to sockets THIS pod actually holds and that are open. */
   broadcastToRegistered(tokens: string[], event: BroadcastingEvent, message: any): void {
     const payload = JSON.stringify({ event, data: message });
 
@@ -107,17 +181,23 @@ export class WebsocketGateway implements OnGatewayConnection, OnGatewayDisconnec
     });
   }
 
-  disconnectClient(monitorToken: string): void {
-    const client = this.clients.get(monitorToken);
+  /** Of a cluster-wide token list, return the subset whose live socket is on this pod. */
+  filterLocalTokens(tokens: string[]): string[] {
+    return tokens.filter(token => this.clients.has(token));
+  }
+
+  /** Close a socket if this pod holds it. Idempotent and a no-op for tokens on other pods. */
+  disconnectClient(token: string): void {
+    const client = this.clients.get(token);
     if (client) {
-      this.logger.log(`disconnect client: ${monitorToken}`);
+      this.logger.log(`disconnect client: ${token}`);
       client.close();
-      this.clients.delete(monitorToken);
+      this.removeLocalClient(token, client);
     }
   }
 
   disconnectAll(): void {
-    for (const [token, client] of this.clients.entries()) {
+    for (const [token] of this.clients.entries()) {
       this.disconnectClient(token);
     }
   }
@@ -132,6 +212,7 @@ export class WebsocketGateway implements OnGatewayConnection, OnGatewayDisconnec
 
   @SubscribeMessage('subscribe:client.count')
   subscribeClientCount(@MessageBody() data: number): Observable<WsResponse<number>> {
+    // Note: this is the LOCAL pod's connection count, not the cluster-wide total.
     return this.clientsCount$.pipe(map((count: number) => ({ event: 'client.count', data: count })));
   }
 }

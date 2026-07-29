@@ -13,14 +13,16 @@ expect_init_script_ok
 chmod -R 777 /var/www/testcenter/data
 
 
-echo_h2 "start apache"
-service apache2 start
+echo_h2 "start web server"
+bash /run-server.sh &
+# wait for php-fpm + nginx to accept requests
+until curl --silent --fail --output /dev/null 'http://localhost:8080/version'; do sleep 1; done
 
 
 echo_h2 "Login"
 LOGIN_RESPONSE=$(
   curl --location --silent --show-error \
-    --request PUT 'http://localhost/session/admin' \
+    --request PUT 'http://localhost:8080/session/admin' \
     --data '{"name":"super","password":"user123"}'
 )
 REGEX='"token":"([a-zA-Z0-9.-_]+)"'
@@ -44,7 +46,7 @@ expect_table_to_have_rows unit_defs_attachments 3
 echo_h2 "File with dependencies should not be deletable"
 RESPONSE=$(
   curl --location --silent --show-error \
-    --request DELETE 'http://localhost/workspace/1/files' \
+    --request DELETE 'http://localhost:8080/workspace/1/files' \
     --header "AuthToken: $TOKEN" \
     --data '{"f":[
       "Resource/SAMPLE_UNITCONTENTS.HTM",
@@ -64,7 +66,7 @@ expect_equals '{"deleted":[],"did_not_exist":[],"not_allowed":[],"was_used":["Re
 echo_h2 "Together with their dependencies they should be deletable"
 RESPONSE=$(
   curl --location --silent --show-error \
-    --request DELETE 'http://localhost/workspace/1/files' \
+    --request DELETE 'http://localhost:8080/workspace/1/files' \
     --header "AuthToken: $TOKEN" \
     --data '{"f":[
       "Testtakers/SAMPLE_TESTTAKERS.XML",
@@ -90,7 +92,7 @@ expect_equals '{"deleted":["Testtakers\/SAMPLE_TESTTAKERS.XML","Booklet\/SAMPLE_
 echo_h2 "After deletion of workspace every traces of the files should be deleted"
 RESPONSE=$(
   curl --location --silent --show-error \
-    --request DELETE 'http://localhost/workspaces' \
+    --request DELETE 'http://localhost:8080/workspaces' \
     --header "AuthToken: $TOKEN" \
     --data '{"ws":[1]}'
 )

@@ -2,6 +2,12 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: {{ .Release.Name }}-backend-config-pvc
+  annotations:
+    # This PVC's only consumers are the seed job (wave 1) and the backend (wave 2). With a
+    # WaitForFirstConsumer StorageClass (e.g. k3d's local-path) it stays Pending until a consumer
+    # is scheduled, so leaving it in wave 0 makes Argo wait forever for it to bind. Place it in
+    # wave 1 so it is created together with the seed job, whose pod triggers the bind.
+    argocd.argoproj.io/sync-wave: "1"
 spec:
   accessModes:
     - {{ .Values.persistence.backendConfigPvcAccessMode }}

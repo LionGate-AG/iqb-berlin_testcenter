@@ -1,5 +1,5 @@
 ARG REGISTRY_PATH=""
-ARG PHP_VERSION=8.3-apache-bookworm
+ARG PHP_VERSION=8.3-fpm-bookworm
 
 # xsd download stage
 FROM ${REGISTRY_PATH}composer:lts AS schema-downloader
@@ -43,10 +43,11 @@ RUN --mount=type=bind,source=backend/composer.json,target=composer.json \
 
 
 FROM ${REGISTRY_PATH}php:${PHP_VERSION} AS base
-# Install PHP extensions
+# Install PHP extensions and nginx (the web server in front of php-fpm)
 RUN --mount=type=cache,sharing=locked,target=/var/cache/apt \
     apt-get update && apt-get install -y --no-install-recommends \
-    libzip-dev
+    libzip-dev \
+    nginx
 
 RUN docker-php-ext-install -j$(nproc) pdo_mysql zip opcache
 RUN pecl install igbinary && docker-php-ext-enable igbinary
@@ -55,23 +56,23 @@ RUN pecl install redis && docker-php-ext-enable redis
 # Configure PHP runtime
 COPY backend/config/local.php.ini /usr/local/etc/php/conf.d/local.ini
 
-# Configure Apache
-RUN a2enmod rewrite
-RUN a2enmod headers
-RUN a2dissite 000-default
-COPY backend/config/vhost.conf /etc/apache2/sites-available
-RUN a2ensite vhost
-RUN echo "ServerName localhost" >> /etc/apache2/conf-available/servername.conf
-RUN a2enconf servername
-COPY backend/config/security.conf /etc/apache2/conf-available
-RUN a2enconf security
-RUN sed -i 's|Listen 80|Listen 8080|' /etc/apache2/ports.conf
+# Configure php-fpm pool (listen on loopback, keep env, log to stderr)
+COPY backend/config/fpm-pool.conf /usr/local/etc/php-fpm.d/zz-testcenter.conf
+
+# Configure nginx (front controller + headers; rootless on :8080)
+COPY backend/config/nginx.conf /etc/nginx/nginx.conf
+# Empty CORS include by default; the dev compose mounts a permissive cors.conf
+RUN mkdir -p /etc/nginx/conf.d && : > /etc/nginx/conf.d/cors.conf
+# Writable temp dirs for the rootless nginx worker (runs as www-data)
+RUN mkdir -p /tmp/nginx-client-body /tmp/nginx-proxy /tmp/nginx-fastcgi \
+             /tmp/nginx-uwsgi /tmp/nginx-scgi \
+ && chown -R www-data:www-data /tmp/nginx-client-body /tmp/nginx-proxy \
+             /tmp/nginx-fastcgi /tmp/nginx-uwsgi /tmp/nginx-scgi
 
 # Copy backend code
 WORKDIR /var/www/testcenter/backend/
 RUN mkdir ./config
 
-COPY backend/.htaccess .
 COPY backend/index.php .
 COPY backend/initialize.php .
 COPY backend/routes.php .
@@ -91,6 +92,7 @@ EXPOSE 8080
 
 COPY backend/entrypoint.sh /entrypoint.sh
 COPY backend/initialize_only.sh /initialize_only.sh
+COPY backend/run-server.sh /run-server.sh
 
 ENTRYPOINT ["/entrypoint.sh"]
 

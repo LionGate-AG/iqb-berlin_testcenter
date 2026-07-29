@@ -11,7 +11,9 @@ class SpeedtestController extends Controller {
   public static function getRandomPackage(Request $request, Response $response): Response {
     $size = (int) $request->getAttribute('size');
 
-    apache_setenv('no-gzip', '1');
+    // Compression is disabled at the web-server layer (nginx `gzip off;`) so the
+    // package is transferred uncompressed and the client measures real throughput.
+    // This replaces the former apache_setenv('no-gzip', '1') (mod_php only).
 
     if (($size > 8388608 * 8) or ($size < 16)) {
       throw new HttpError("Unsupported test size ($size)", 406);
