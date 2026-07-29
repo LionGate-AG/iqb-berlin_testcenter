@@ -29,7 +29,8 @@
     "ext-zip": "*",
     "ext-zend-opcache" : "*",
     "ext-ctype": "*",
-    "altcha-org/altcha": "^1.3"
+    "altcha-org/altcha": "^1.3",
+    "aws/aws-sdk-php": "^3.389"
   },
   "require-dev": {
     "amphp/parallel": "2.3.2",
