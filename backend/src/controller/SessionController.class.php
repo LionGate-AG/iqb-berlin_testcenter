@@ -94,12 +94,18 @@ class SessionController extends Controller {
    */
   public static function putSessionPerson(Request $request, Response $response): Response {
     $body = RequestHelper::getFields($request, [
-      'code' => ''
+      'code' => '',
+      'keepExistingToken' => false
     ]);
 
     $loginSession = self::sessionDAO()->getLoginSessionByToken(self::authToken($request)->getToken());
 
-    $personSession = self::sessionDAO()->createOrUpdatePersonSession($loginSession, (string)$body['code']);
+    $personSession = self::sessionDAO()->createOrUpdatePersonSession(
+      $loginSession,
+      (string)$body['code'],
+      false,
+      !$body['keepExistingToken']
+    );
     CacheService::removeAuthentication($personSession);
     $testsOfPerson = self::sessionDAO()->getTestsOfPerson($personSession);
     CacheService::storeAuthentication($personSession);
