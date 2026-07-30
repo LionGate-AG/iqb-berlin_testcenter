@@ -1,5 +1,8 @@
+-- Shifted 24h past epoch (not 1970-01-01 00:00:01) so the UTC-converted value never falls
+-- before the TIMESTAMP floor on non-UTC DB servers (e.g. fails as "Invalid default value"
+-- on any server with a positive UTC offset, since local-time literals are converted to UTC).
 alter table login_session_groups
-  add column last_modified timestamp not null default '1970-01-01 00:00:01';
+  add column last_modified timestamp not null default '1970-01-02 00:00:00';
 
 alter table login_session_groups
   modify column last_modified timestamp not null;
