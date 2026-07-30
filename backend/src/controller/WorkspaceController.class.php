@@ -146,17 +146,25 @@ class WorkspaceController extends Controller {
     return $response->withBody($fileStream);
   }
 
+  private static function hasValidTesttakerToken(array $auth, ?string $token): bool {
+    if (!$token) return false;
+    foreach ($auth as $headerValue) {
+      if (hash_equals('Bearer '.$token, $headerValue)) return true;
+    }
+    return false;
+  }
+
   public static function putTesttaker(Request $request, Response $response): Response {
     $auth = $request->getHeader('Authorization');
     if (!$auth) return $response->withStatus(401);
     $token = $_ENV["TESTTAKER_TOKEN"];
-    // TODO(SKNRW-391): REMOTE_ADDR check below is a no-op for all inputs due to operator
-    // precedence (`!` binds before `===`), inherited verbatim from the old _BY fork during
-    // migration. The Bearer token check is this endpoint's only real protection currently.
-    if (!$token || !$_SERVER['REMOTE_ADDR'] === '127.0.0.1' || !in_array('Bearer '.$token, $auth)) return $response->withStatus(403);
-    $filename = $request->getAttribute('filename');
+    if (!self::hasValidTesttakerToken($auth, $token)) return $response->withStatus(403);
+
+    $filename = basename((string) $request->getAttribute('filename'));
+    if (!preg_match('/^[A-Za-z0-9._-]+\.xml$/i', $filename)) return $response->withStatus(400);
+
     $workspace = new Workspace((int) $request->getAttribute('ws_id'));
-    file_put_contents($workspace->getWorkspacePath().'/'.$request->getAttribute('filename'), $request->getBody());
+    file_put_contents($workspace->getWorkspacePath().'/'.$filename, $request->getBody());
     $filesToImport = [$filename];
     $importedFilesReports = $workspace->importUncategorizedFiles($filesToImport);
     $workspace->setWorkspaceHash();
@@ -183,8 +191,7 @@ class WorkspaceController extends Controller {
     $auth = $request->getHeader('Authorization');
     if (!$auth) return $response->withStatus(401);
     $token = $_ENV["TESTTAKER_TOKEN"];
-    // TODO(SKNRW-391): REMOTE_ADDR check is a no-op here too, see putTesttaker() above.
-    if (!$token || !$_SERVER['REMOTE_ADDR'] === '127.0.0.1' || !in_array('Bearer '.$token, $auth)) return $response->withStatus(403);
+    if (!self::hasValidTesttakerToken($auth, $token)) return $response->withStatus(403);
     $workspace = new Workspace((int) $request->getAttribute('ws_id'));
     $testtaker = 'Testtakers/'.$request->getAttribute('filename');
     $deletionReport = $workspace->deleteFiles([$testtaker]);
