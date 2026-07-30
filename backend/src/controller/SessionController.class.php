@@ -96,13 +96,17 @@ class SessionController extends Controller {
    */
   public static function putSessionPerson(Request $request, Response $response): Response {
     $body = RequestHelper::getFields($request, [
-      'code' => ''
+      'code' => '',
+      'keepExistingToken' => false
     ]);
     if ($body['code'] && in_array('person', SystemConfig::$bruteForceProtection_sessions)) {
       throw new HttpError("Brute Force protection active. Challenge for this code must be solved to create a session", 400);
     }
-    return $response->withJson(self::createPersonSession(self::authToken($request)->getToken(), $body['code']));
-
+    return $response->withJson(self::createPersonSession(
+      self::authToken($request)->getToken(),
+      $body['code'],
+      (bool)$body['keepExistingToken']
+    ));
   }
 
   private static function registerDependantSessions(LoginSession $login): void {
@@ -317,10 +321,10 @@ class SessionController extends Controller {
     return AccessSet::createFromPersonSession($personSession, ...$testsOfPerson, ...$groupMonitors, ...$sysChecks);
   }
 
-  public static function createPersonSession(string $token, string $code): AccessSet {
+  public static function createPersonSession(string $token, string $code, bool $keepExistingToken = false): AccessSet {
 
     $loginSession = self::sessionDAO()->getLoginSessionByToken($token);
-    $personSession = self::sessionDAO()->createOrUpdatePersonSession($loginSession, $code);
+    $personSession = self::sessionDAO()->createOrUpdatePersonSession($loginSession, $code, false, !$keepExistingToken);
     CacheService::removeAuthentication($personSession);
     $testsOfPerson = self::sessionDAO()->getTestsOfPerson($personSession);
     CacheService::storeAuthentication($personSession);
