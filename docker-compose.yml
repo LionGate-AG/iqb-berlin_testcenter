@@ -86,6 +86,10 @@ services:
       # Allowlisted in the prod frontend nginx CSP so the browser may follow
       # presigned-URL redirects to the object store. Empty when disabled.
       OBJECT_STORE_CSP_ORIGIN: ${OBJECT_STORE_CSP_ORIGIN:-}
+      # file-server exists in this deployment; nginx.conf's /fs/ proxy_pass
+      # targets it directly. See nginx.conf for why this is a plain hostname
+      # here but a dead loopback address in deployments without file-server.
+      FILE_SERVER_UPSTREAM: http://file-server:8080
     logging:
       options:
         <<: *env-logging-conf
