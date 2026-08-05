@@ -24,5 +24,5 @@ fi
 # init data with conditions based on environment variables
 php /var/www/testcenter/backend/initialize.php $params
 
-# keep container open
-apache2-foreground
+# keep container open: start php-fpm + nginx (serve only)
+exec /run-server.sh
