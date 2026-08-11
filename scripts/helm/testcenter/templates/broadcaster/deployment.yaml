@@ -3,15 +3,21 @@ kind: Deployment
 metadata:
   name: {{ .Release.Name }}-broadcaster
 spec:
-  replicas: 1
+  {{- if not .Values.deployment.broadcaster.autoscaling.enabled }}
+  replicas: {{ .Values.deployment.broadcaster.replicas }}
+  {{- end }}
   selector:
     matchLabels:
       app: {{ .Release.Name }}-broadcaster-pod
   template:
     metadata:
+      annotations:
+        checksum/secret: {{ include (print $.Template.BasePath "/broadcaster-redis/secret.yaml") . | sha256sum }}
       labels:
         app: {{ .Release.Name }}-broadcaster-pod
     spec:
+      # graceful shutdown: preStop sleep (below) + onModuleDestroy drain (~5s) must fit in this window
+      terminationGracePeriodSeconds: {{ .Values.deployment.broadcaster.terminationGracePeriodSeconds }}
       {{- if .Values.deployment.broadcaster.topologySpreadConstraints }}
       topologySpreadConstraints:
         {{- .Values.deployment.broadcaster.topologySpreadConstraints | toYaml | nindent 8 }}
@@ -36,6 +42,22 @@ spec:
           ports:
             - name: http-container
               containerPort: 3000
+          env:
+            - name: REDIS_HOST
+              value: {{ .Release.Name }}-broadcaster-redis
+            - name: REDIS_PORT
+              value: "6379"
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-broadcaster-redis-secret
+                  key: REDIS_PASSWORD
+          lifecycle:
+            # Delay SIGTERM so kube-proxy removes this pod from the Service endpoints first;
+            # no NEW WebSocket connections land on a pod that is about to drain.
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep 5"]
           {{- if .Values.deployment.broadcaster.resources }}
           resources:
             {{- .Values.deployment.broadcaster.resources | toYaml | nindent 12 }}
@@ -50,6 +72,7 @@ spec:
             failureThreshold: {{ .Values.deployment.broadcaster.probes.liveness.failureThreshold }}
             initialDelaySeconds: {{ .Values.deployment.broadcaster.probes.liveness.initialDelaySeconds}}
           readinessProbe:
+            # /testees reads from Redis, so readiness also gates on Redis being reachable
             httpGet:
               path: /testees
               port: 3000
@@ -57,3 +80,14 @@ spec:
             timeoutSeconds: {{ .Values.deployment.broadcaster.probes.readiness.timeoutSeconds }}
             successThreshold: {{ .Values.deployment.broadcaster.probes.readiness.successThreshold }}
             failureThreshold: {{ .Values.deployment.broadcaster.probes.readiness.failureThreshold }}
+      initContainers:
+        - name: wait-for-broadcaster-redis-initcontainer
+          image: "{{ .Values.image.busybox.registryPath }}busybox:{{ .Values.image.busybox.tag | default "latest" }}"
+          imagePullPolicy: {{ .Values.image.busybox.imagePullPolicy }}
+          securityContext:
+            privileged: false
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          command: [ 'sh', '-c', 'until nc -z {{ .Release.Name }}-broadcaster-redis 6379; do echo waiting for {{ .Release.Name }}-broadcaster-redis; sleep 2; done;' ]

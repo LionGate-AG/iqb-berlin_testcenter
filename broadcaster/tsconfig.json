@@ -8,6 +8,8 @@
     "incremental": true,
     "module": "commonjs",
     "moduleResolution": "node",
+    "ignoreDeprecations": "5.0",
+    "rootDir": "../",
     "outDir": "./dist",
     "removeComments": true,
     "resolveJsonModule": true,

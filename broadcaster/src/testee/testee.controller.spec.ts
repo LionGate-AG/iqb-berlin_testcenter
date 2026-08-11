@@ -27,98 +27,59 @@ describe('TesteeController Post', () => {
     expect(testeeController).toBeDefined();
   });
 
-  it('should throw not testee data', () => {
-    const mockRequest = {
-      body: {
-        name: 'name'
-      }
-    } as Request;
+  it('should throw not testee data', async () => {
+    const mockRequest = { body: { name: 'name' } } as Request;
 
-    expect(() => testeeController.testeeRegister(mockRequest)).toThrow(HttpException);
-    expect(() => testeeController.testeeRegister(mockRequest)).toThrow('not testee data');
+    await expect(testeeController.testeeRegister(mockRequest)).rejects.toThrow(HttpException);
+    await expect(testeeController.testeeRegister(mockRequest)).rejects.toThrow('not testee data');
   });
 
-  it('should throw not testee data (no testId property)', () => {
-    const mockRequest = {
-      body: {
-        token: 'tokenString'
-      }
-    } as Request;
+  it('should throw not testee data (no testId property)', async () => {
+    const mockRequest = { body: { token: 'tokenString' } } as Request;
 
-    expect(() => testeeController.testeeRegister(mockRequest)).toThrow(HttpException);
-    expect(() => testeeController.testeeRegister(mockRequest)).toThrow('not testee data');
+    await expect(testeeController.testeeRegister(mockRequest)).rejects.toThrow(HttpException);
+    await expect(testeeController.testeeRegister(mockRequest)).rejects.toThrow('not testee data');
   });
 
-  it('should throw not testee data (no token property)', () => {
-    const mockRequest = {
-      body: {
-        testId: 35
-      }
-    } as Request;
+  it('should throw not testee data (no token property)', async () => {
+    const mockRequest = { body: { testId: 35 } } as Request;
 
-    expect(() => testeeController.testeeRegister(mockRequest)).toThrow(HttpException);
-    expect(() => testeeController.testeeRegister(mockRequest)).toThrow('not testee data');
+    await expect(testeeController.testeeRegister(mockRequest)).rejects.toThrow(HttpException);
+    await expect(testeeController.testeeRegister(mockRequest)).rejects.toThrow('not testee data');
   });
 
-  it('should not throw any errors (happy path - register)', () => {
+  it('should not throw any errors (happy path - register)', async () => {
     const mockRequest = {
-      body: {
-        token: 'token string',
-        testId: 4,
-        disconnectNotificationUri: 'testURI'
-      }
+      body: { token: 'token string', testId: 4, disconnectNotificationUri: 'testURI' }
     } as Request;
 
-    expect(testeeController.testeeRegister(mockRequest)).toBeUndefined();
+    await expect(testeeController.testeeRegister(mockRequest)).resolves.toBeUndefined();
     expect(mockTesteeService.addTestee).toHaveBeenCalled();
   });
 
-  it('should throw no token in body', () => {
-    const mockRequest = {
-      body: {
-        testId: 5,
-        disconnectNotificationUri: 'testURI'
-      }
-    } as Request;
+  it('should throw no token in body', async () => {
+    const mockRequest = { body: { testId: 5, disconnectNotificationUri: 'testURI' } } as Request;
 
-    expect(() => testeeController.testeeUnregister(mockRequest)).toThrow(HttpException);
-    expect(() => testeeController.testeeUnregister(mockRequest)).toThrow('no token in body');
+    await expect(testeeController.testeeUnregister(mockRequest)).rejects.toThrow(HttpException);
+    await expect(testeeController.testeeUnregister(mockRequest)).rejects.toThrow('no token in body');
   });
 
-  it('should not throw any errors (happy path - unregister)', () => {
+  it('should not throw any errors (happy path - unregister)', async () => {
     const spyLogger = jest.spyOn(testeeController['logger'], 'log');
     const mockRequest = {
-      body: {
-        token: 'token string',
-        testId: 5,
-        disconnectNotificationUri: 'testURI'
-      }
+      body: { token: 'token string', testId: 5, disconnectNotificationUri: 'testURI' }
     } as Request;
 
-    expect(testeeController.testeeUnregister(mockRequest)).toBeUndefined();
+    await expect(testeeController.testeeUnregister(mockRequest)).resolves.toBeUndefined();
     expect(spyLogger).toHaveBeenCalled();
     expect(mockTesteeService.removeTestee).toHaveBeenCalled();
   });
 });
 
 describe('testeeController Get', () => {
-  const testee1 : Testee = {
-    token: 'testee token1',
-    testId: 4,
-    disconnectNotificationUri: 'testURI'
-  };
-
-  const testee2 : Testee = {
-    token: 'testee token2',
-    testId: 4,
-    disconnectNotificationUri: 'testURI'
-  };
-
-  const testee3 : Testee = {
-    token: 'testee token3',
-    testId: 6,
-    disconnectNotificationUri: 'testURI'
-  };
+  const testee1 : Testee = { token: 'testee token1', testId: 4, disconnectNotificationUri: 'testURI' };
+  const testee2 : Testee = { token: 'testee token2', testId: 4, disconnectNotificationUri: 'testURI' };
+  const testee3 : Testee = { token: 'testee token3', testId: 6, disconnectNotificationUri: 'testURI' };
 
   const testeeList = [testee1, testee2, testee3];
 

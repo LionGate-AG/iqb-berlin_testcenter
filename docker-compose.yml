@@ -33,9 +33,31 @@ services:
   broadcaster:
     image: iqbberlin/testcenter-broadcaster:current
     <<: *restart-policy
+    depends_on:
+      - broadcaster-redis
+    environment:
+      REDIS_HOST: broadcaster-redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
     logging:
       options:
         <<: *env-logging-conf
+    networks:
+      testcenter:
+
+  # Dedicated Redis for the broadcaster's shared state + cross-pod pub/sub fan-out.
+  # Standalone on purpose: kept separate from `cache-server` (backend auth/file cache).
+  broadcaster-redis:
+    image: ${DOCKERHUB_PROXY}redis:8.0-bookworm
+    <<: *restart-policy
+    user: redis
+    command: [
+      "redis-server",
+      "--requirepass", "${REDIS_PASSWORD}",
+      "--maxmemory-policy", "noeviction",
+      "--save", '""',
+      "--appendonly", "no"
+    ]
     networks:
       testcenter:
 

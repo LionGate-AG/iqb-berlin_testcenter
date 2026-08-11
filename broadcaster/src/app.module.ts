@@ -10,6 +10,7 @@ import { CommandController } from './command/command.controller';
 import { TesteeController } from './testee/testee.controller';
 import { TesteeService } from './testee/testee.service';
 import { SystemController } from './system/system.controller';
+import { RedisService } from './redis/redis.service';
 
 @Module({
   controllers: [
@@ -20,6 +21,7 @@ import { SystemController } from './system/system.controller';
     SystemController
   ],
   providers: [
+    RedisService,
     WebsocketGateway,
     TestSessionService,
     TesteeService,

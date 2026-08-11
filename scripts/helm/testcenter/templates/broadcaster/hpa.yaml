@@ -1,0 +1,22 @@
+{{- if .Values.deployment.broadcaster.autoscaling.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ .Release.Name }}-broadcaster-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ .Release.Name }}-broadcaster
+  minReplicas: {{ .Values.deployment.broadcaster.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.deployment.broadcaster.autoscaling.maxReplicas }}
+  metrics:
+    # CPU only: memory scales with held WebSocket connections (roughly static per pod),
+    # so it is a poor autoscaling signal for this workload.
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.deployment.broadcaster.autoscaling.targetCPUUtilizationPercentage }}
+{{- end }}

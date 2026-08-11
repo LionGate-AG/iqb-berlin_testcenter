@@ -27,50 +27,36 @@ describe('MonitorController Post Register', () => {
     expect(monitorController).toBeDefined();
   });
 
-  it('should throw not monitor data (not monitor request data)', () => {
-    const mockNotMonitorRequest = {
-      body: {
-        name: 'Testname'
-      }
-    } as Request;
+  it('should throw not monitor data (not monitor request data)', async () => {
+    const mockNotMonitorRequest = { body: { name: 'Testname' } } as Request;
 
-    expect(() => monitorController.monitorRegister(mockNotMonitorRequest)).toThrow(HttpException);
-    expect(() => monitorController.monitorRegister(mockNotMonitorRequest)).toThrow('not monitor data');
+    await expect(monitorController.monitorRegister(mockNotMonitorRequest)).rejects.toThrow(HttpException);
+    await expect(monitorController.monitorRegister(mockNotMonitorRequest)).rejects.toThrow('not monitor data');
   });
 
-  it('should throw not monitor data (no token in request)', () => {
-    const mockNoTokenRequest = {
-      body: {
-        groups: ['group string 1', 'group string 2']
-      }
-    } as Request;
+  it('should throw not monitor data (no token in request)', async () => {
+    const mockNoTokenRequest = { body: { groups: ['group string 1', 'group string 2'] } } as Request;
 
-    expect(() => monitorController.monitorRegister(mockNoTokenRequest)).toThrow(HttpException);
-    expect(() => monitorController.monitorRegister(mockNoTokenRequest)).toThrow('not monitor data');
+    await expect(monitorController.monitorRegister(mockNoTokenRequest)).rejects.toThrow(HttpException);
+    await expect(monitorController.monitorRegister(mockNoTokenRequest)).rejects.toThrow('not monitor data');
   });
 
-  it('should throw not monitor data (no groups in request)', () => {
-    const mockNoTokenRequest = {
-      body: {
-        token: 'tokenString'
-      }
-    } as Request;
+  it('should throw not monitor data (no groups in request)', async () => {
+    const mockNoTokenRequest = { body: { token: 'tokenString' } } as Request;
 
-    expect(() => monitorController.monitorRegister(mockNoTokenRequest)).toThrow(HttpException);
-    expect(() => monitorController.monitorRegister(mockNoTokenRequest)).toThrow('not monitor data');
+    await expect(monitorController.monitorRegister(mockNoTokenRequest)).rejects.toThrow(HttpException);
+    await expect(monitorController.monitorRegister(mockNoTokenRequest)).rejects.toThrow('not monitor data');
   });
 
-  it('should not throw any errors (happy path)', () => {
+  it('should not throw any errors (happy path)', async () => {
     const spyLogger = jest.spyOn(monitorController['logger'], 'log');
     const mockMonitor : Monitor = {
       token: 'tokenString',
       groups: ['group string 1', 'group string 2']
     };
-    const mockRequest = {
-      body: mockMonitor
-    } as Request;
+    const mockRequest = { body: mockMonitor } as Request;
 
-    expect(monitorController.monitorRegister(mockRequest)).toBeUndefined();
+    await expect(monitorController.monitorRegister(mockRequest)).resolves.toBeUndefined();
     expect(spyLogger).toHaveBeenCalled();
     expect(mockTestSessionservice.addMonitor).toHaveBeenCalled();
   });
@@ -92,26 +78,18 @@ describe('monitorController Post Unregister', () => {
     monitorController = module.get<MonitorController>(MonitorController);
   });
 
-  it('should throw no token in body', () => {
-    const mockRequest = {
-      body: {
-        name: 'name'
-      }
-    } as Request;
+  it('should throw no token in body', async () => {
+    const mockRequest = { body: { name: 'name' } } as Request;
 
-    expect(() => monitorController.monitorUnregister(mockRequest)).toThrow(HttpException);
-    expect(() => monitorController.monitorUnregister(mockRequest)).toThrow('no token in body');
+    await expect(monitorController.monitorUnregister(mockRequest)).rejects.toThrow(HttpException);
+    await expect(monitorController.monitorUnregister(mockRequest)).rejects.toThrow('no token in body');
   });
 
-  it('should not throw any errors (happy path)', () => {
+  it('should not throw any errors (happy path)', async () => {
     const spyLogger = jest.spyOn(monitorController['logger'], 'log');
-    const mockRequest = {
-      body: {
-        token: 'token string'
-      }
-    } as Request;
+    const mockRequest = { body: { token: 'token string' } } as Request;
 
-    expect(monitorController.monitorUnregister(mockRequest)).toBeUndefined();
+    await expect(monitorController.monitorUnregister(mockRequest)).resolves.toBeUndefined();
     expect(spyLogger).toHaveBeenCalled();
     expect(mockTestSessionservice.removeMonitor).toHaveBeenCalled();
   });
@@ -120,14 +98,8 @@ describe('monitorController Post Unregister', () => {
 describe('monitorController Get', () => {
   let monitorController: MonitorController;
 
-  const monitor1 : Monitor = {
-    token: 'token string1',
-    groups: ['group string']
-  };
-  const monitor2 : Monitor = {
-    token: 'token string2',
-    groups: ['group string']
-  };
+  const monitor1 : Monitor = { token: 'token string1', groups: ['group string'] };
+  const monitor2 : Monitor = { token: 'token string2', groups: ['group string'] };
   const mockMonitorList = [monitor1, monitor2];
 
   const mockTokenList = ['first token', 'second token'];
