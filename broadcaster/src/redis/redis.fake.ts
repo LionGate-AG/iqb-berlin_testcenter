@@ -61,7 +61,9 @@ export class FakeRedisService {
   }
 
   async pushConnection(token: string): Promise<void> {
-    this.connections.push(token);
+    if (!this.connections.includes(token)) {
+      this.connections.push(token);
+    }
   }
 
   async removeConnection(token: string): Promise<void> {
@@ -70,6 +72,10 @@ export class FakeRedisService {
 
   async setClientAlive(token: string): Promise<void> {
     this.alive.add(token);
+  }
+
+  async setClientsAlive(tokens: string[]): Promise<void> {
+    tokens.forEach(t => this.alive.add(t));
   }
 
   async deleteClientAlive(token: string): Promise<void> {

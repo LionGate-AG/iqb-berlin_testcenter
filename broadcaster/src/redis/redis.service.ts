@@ -47,10 +47,12 @@ return encoded
 export class RedisService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(RedisService.name);
 
-  // Two connections: a normal one for commands + publishing, and a subscriber-only one
-  // (a connection in subscriber mode cannot issue regular commands).
+  // Three connections. pub/sub split is the usual reason (a connection in subscriber
+  // mode cannot issue regular commands); healthCheck is split out for a different one --
+  // see its declaration below.
   private readonly pub: Redis;
   private readonly sub: Redis;
+  private readonly healthCheck: Redis;
 
   private readonly handlers = new Map<string, ChannelHandler>();
 
@@ -65,12 +67,25 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     };
     this.pub = new Redis(options);
     this.sub = new Redis(options);
+    // Dedicated connection for ping() (the readiness probe backing /health), kept off
+    // `pub` on purpose. ioredis sends commands over one TCP connection and Redis replies
+    // in the order received, so every setClientAlive() SET the heartbeat sweep fires per
+    // ALIVE client (not just stale ones -- see websocket.gateway.ts) queues on `pub`
+    // ahead of anything else already waiting there. Under enough concurrent clients that's
+    // hundreds of SETs back to back; a ping() sharing that connection queues behind all of
+    // them and can blow past the readiness probe's timeout even though no single command
+    // is slow. Chunking the sweep (HEARTBEAT_BATCH_SIZE) only paces the JS event loop --
+    // it does nothing for this queue, since ioredis dispatches commands to Redis as fast as
+    // the loop runs regardless of where in the loop it yields. Isolating the health check
+    // onto its own connection means it's never stuck behind bulk heartbeat traffic.
+    this.healthCheck = new Redis(options);
     this.pub.defineCommand('mergeSession', { numberOfKeys: 1, lua: MERGE_SESSION_LUA });
   }
 
   onModuleInit(): void {
     this.pub.on('error', e => this.logger.error(`redis(pub) error: ${e.message}`));
     this.sub.on('error', e => this.logger.error(`redis(sub) error: ${e.message}`));
+    this.healthCheck.on('error', e => this.logger.error(`redis(healthCheck) error: ${e.message}`));
 
     this.sub.on('message', (channel: string, message: string) => {
       const handler = this.handlers.get(channel);
@@ -86,12 +101,12 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
   }
 
   async onModuleDestroy(): Promise<void> {
-    await Promise.allSettled([this.pub.quit(), this.sub.quit()]);
+    await Promise.allSettled([this.pub.quit(), this.sub.quit(), this.healthCheck.quit()]);
   }
 
   // ---- health ----
   async ping(): Promise<string> {
-    return this.pub.ping();
+    return this.healthCheck.ping();
   }
 
   // ---- pub/sub ----
@@ -141,17 +156,34 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
   }
 
   // ---- connection tracking (ops/debug only) ----
+  // Both O(1). See KEY.connectedTokens for why this is a SET and not a LIST.
   async pushConnection(token: string): Promise<void> {
-    await this.pub.rpush(KEY.websocketConnections, token);
+    await this.pub.sadd(KEY.connectedTokens, token);
   }
 
   async removeConnection(token: string): Promise<void> {
-    await this.pub.lrem(KEY.websocketConnections, 0, token);
+    await this.pub.srem(KEY.connectedTokens, token);
   }
 
   // ---- liveness ----
   async setClientAlive(token: string): Promise<void> {
     await this.pub.set(KEY.clientAlive(token), '1', 'EX', CLIENT_ALIVE_TTL_SECONDS);
+  }
+
+  /**
+   * Refresh the liveness marker for many tokens in ONE pipelined round trip, instead of
+   * one SET per token. The heartbeat sweep refreshes every alive client on every tick, so
+   * calling setClientAlive() per client put hundreds of individual commands on the wire
+   * per tick -- enough to delay anything queued behind them (see the healthCheck
+   * connection comment in the constructor). Same command, same TTL, one round trip.
+   */
+  async setClientsAlive(tokens: string[]): Promise<void> {
+    if (tokens.length === 0) {
+      return;
+    }
+    const pipeline = this.pub.pipeline();
+    tokens.forEach(t => pipeline.set(KEY.clientAlive(t), '1', 'EX', CLIENT_ALIVE_TTL_SECONDS));
+    await pipeline.exec();
   }
 
   async deleteClientAlive(token: string): Promise<void> {

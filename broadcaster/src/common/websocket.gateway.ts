@@ -79,16 +79,42 @@ export class WebsocketGateway implements
   private async runHeartbeatSweep(): Promise<void> {
     let staleCount = 0;
     let sinceYield = 0;
+    // Tokens whose liveness marker needs refreshing, flushed per batch in ONE pipelined
+    // Redis round trip rather than one SET per client. Per-client SETs meant a pod holding
+    // N alive clients put N commands on the shared `pub` connection every tick, delaying
+    // anything queued behind them -- including the readiness probe's ping() before it got
+    // its own connection (see RedisService's constructor).
+    let aliveBatch: string[] = [];
+
+    const flushAliveBatch = async (): Promise<void> => {
+      if (aliveBatch.length === 0) {
+        return;
+      }
+      const batch = aliveBatch;
+      aliveBatch = [];
+      await this.redisService.setClientsAlive(batch).catch(() => {});
+    };
 
     for (const [token, ws] of this.clients) {
       if (!this.aliveClients.has(ws)) {
         this.removeLocalClient(token, ws);
         ws.terminate();
+        // Announce the loss exactly as handleDisconnect() does for a graceful close.
+        // Without this, a heartbeat-terminated client never reached TesteeService's
+        // clientLost$ subscription, so its `testees` hash entry and testee-testid:
+        // set membership were never deleted -- they leaked permanently (observed:
+        // HLEN testees at 162,595 against ~30k concurrent users, accumulated across
+        // runs). handleDisconnect() cannot cover this: terminate() does fire a close
+        // event, but that handler resolves the token by scanning `clients`, which
+        // removeLocalClient() has already deleted from -- so it finds nothing and
+        // emits nothing. Emitting here is therefore the only path, and it cannot
+        // double-emit for the same reason.
+        this.clientLost$.next(token);
         staleCount += 1;
       } else {
         this.aliveClients.delete(ws);
         // Refresh the cluster-wide liveness marker for sockets this pod holds.
-        this.redisService.setClientAlive(token).catch(() => {});
+        aliveBatch.push(token);
         ws.ping();
       }
 
@@ -96,9 +122,13 @@ export class WebsocketGateway implements
       if (sinceYield >= WebsocketGateway.HEARTBEAT_BATCH_SIZE) {
         sinceYield = 0;
         // eslint-disable-next-line no-await-in-loop
+        await flushAliveBatch();
+        // eslint-disable-next-line no-await-in-loop
         await new Promise<void>(resolve => { setImmediate(resolve); });
       }
     }
+
+    await flushAliveBatch();
 
     // One summary line per tick instead of one per stale client -- logging each
     // individually was the actual cost of the blocking incident this fixes.
