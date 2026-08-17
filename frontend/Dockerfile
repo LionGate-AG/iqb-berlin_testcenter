@@ -27,6 +27,21 @@ COPY frontend/src src/
 COPY common ../common
 COPY definitions ../definitions
 
+# src/environments/environment.ts is gitignored (see /.gitignore), so it is never
+# present in the build context -- yet main.ts and customtext.pipe.ts import it
+# directly, so `ng build` fails to resolve the module without it:
+#   ✘ [ERROR] Could not resolve "./environments/environment"
+#   ✘ [ERROR] TS2307: Cannot find module '../../../../environments/environment'
+# angular.json's production config then REPLACES this file via fileReplacements
+# (environment.ts -> environment.prod.ts), so the copied contents are not what
+# ends up in the bundle -- the file only has to exist for module resolution.
+# Every other build path already does exactly this (scripts/ci/frontend.yml and
+# e2e.yml both `cp environment.dev.ts environment.ts` first); the Dockerfile is
+# the only one that has to create it itself. Copying the prod variant rather
+# than dev so that if fileReplacements ever stops applying, the fallback is
+# production values, not development ones.
+RUN cp src/environments/environment.prod.ts src/environments/environment.ts
+
 RUN --mount=type=cache,sharing=locked,target=~/.angular/cache \
     npx ng build \
       --configuration production \
