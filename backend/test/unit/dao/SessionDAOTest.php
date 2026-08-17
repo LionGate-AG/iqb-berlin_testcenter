@@ -611,10 +611,16 @@ class SessionDAOTest extends TestCase {
   }
 
   public function test_ownsTest() {
-    $result = $this->dbc->ownsTest('person-token', "1");
+    // ownsTest() now takes the person_sessions.id instead of the token string
+    // (the caller has it already from getToken(), so re-joining person_sessions
+    // was redundant). IDs come from testdata.sql's insert order:
+    //   id 1 = 'person-token'                  -> owns test 1 (tests.person_id = 1)
+    //   id 4 = 'person-of-future-login-token'  -> owns no test
+    // id 1 is also what test_getToken_person() asserts for 'person-token'.
+    $result = $this->dbc->ownsTest(1, "1");
     $this->assertTrue($result);
 
-    $result = $this->dbc->ownsTest('person-of-future-login-token', "1");
+    $result = $this->dbc->ownsTest(4, "1");
     $this->assertFalse($result);
   }
 

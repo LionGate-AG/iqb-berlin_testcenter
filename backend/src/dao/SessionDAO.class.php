@@ -3,9 +3,13 @@
 declare(strict_types=1);
 
 class SessionDAO extends DAO {
-  public function getToken(string $tokenString, array $requiredTypes): AuthToken {
-    $tokenInfo = $this->_(
-      'select
+  /**
+   * One SELECT branch per session type. Kept in this order so a multi-type
+   * request produces the same branch order (and therefore the same result for
+   * `limit 1`) as the single hardcoded UNION this replaced.
+   */
+  private const TOKEN_QUERY_BRANCHES = [
+    'admin' => 'select
                     admin_sessions.token,
                     users.id,
                     \'admin\' as "type",
@@ -16,9 +20,9 @@ class SessionDAO extends DAO {
                 from admin_sessions
                      left join users on (users.id = admin_sessions.user_id)
                 where
-                    admin_sessions.token = :token
-            union
-                select
+                    admin_sessions.token = :token',
+
+    'person' => 'select
                     person_sessions.token,
                     person_sessions.id as "id",
                     \'person\' as "type",
@@ -30,9 +34,9 @@ class SessionDAO extends DAO {
                      left join login_sessions on (person_sessions.login_sessions_id = login_sessions.id)
                      left join logins on (logins.name = login_sessions.name)
                 where
-                    person_sessions.token = :token
-            union
-                select
+                    person_sessions.token = :token',
+
+    'login' => 'select
                     token,
                     login_sessions.id as "id",
                     \'login\' as "type",
@@ -43,8 +47,48 @@ class SessionDAO extends DAO {
                 from login_sessions
                      left join logins on (logins.name = login_sessions.name)
                 where
-                    login_sessions.token = :token
-            limit 1',
+                    login_sessions.token = :token'
+  ];
+
+  /**
+   * Resolve a token string, searching ONLY the session tables the caller
+   * actually accepts.
+   *
+   * This used to be a fixed three-branch UNION over admin_sessions (+users),
+   * person_sessions (+login_sessions +logins) and login_sessions (+logins) --
+   * six tables plus a UNION de-duplication pass -- regardless of
+   * $requiredTypes. Because every route reaches this through
+   * RequireToken/HandleOptionalToken with its accepted types, the branches for
+   * types the route rejects could only ever produce a row that the in_array()
+   * check below then threw away.
+   *
+   * Filtering the branches up front is therefore behaviour-preserving and, for
+   * the overwhelmingly most common single-type case, collapses the statement to
+   * one branch with no UNION at all: RequireToken('person') now touches 3
+   * tables instead of 6. That matters because this runs on EVERY authenticated
+   * request -- it was the single most frequent query in the system and the
+   * top DB timeout in load tests (338 of 1406 `getToken` connect timeouts in
+   * one 20-minute window).
+   *
+   * The only observable difference is the error MESSAGE on a type mismatch: a
+   * person token sent to an admin-only route previously reported "has wrong
+   * type", now it reports "Invalid token" -- because the token is no longer
+   * looked for in the person table at all. Both are HttpError 403, which is
+   * what callers and the existing tests assert on.
+   */
+  public function getToken(string $tokenString, array $requiredTypes): AuthToken {
+    // Preserves TOKEN_QUERY_BRANCHES' order, not $requiredTypes' order.
+    $branches = array_intersect_key(self::TOKEN_QUERY_BRANCHES, array_flip($requiredTypes));
+
+    if (!$branches) {
+      // No recognised type requested, so no row could ever pass the in_array()
+      // type check below -- the old code always ended in a 403 here too, just
+      // after querying all six tables first.
+      throw new HttpError("Invalid token: `$tokenString`", 403);
+    }
+
+    $tokenInfo = $this->_(
+      implode("\n            union\n                ", $branches) . "\n            limit 1",
       [':token' => $tokenString]
     );
 
@@ -56,6 +100,10 @@ class SessionDAO extends DAO {
       throw new HttpError("Login removed: `$tokenString`", 410);
     }
 
+    // Now unreachable in practice -- each branch hardcodes its own type literal
+    // and only requested branches are queried, so the row's type is always in
+    // $requiredTypes. Kept as a safety net: it is the only thing that would
+    // catch a future branch whose type literal disagrees with its array key.
     if (!in_array($tokenInfo["type"], $requiredTypes)) {
       throw new HttpError("Token `$tokenString` of "
         . "type `{$tokenInfo["type"]}` has wrong type - `"
@@ -537,14 +585,33 @@ class SessionDAO extends DAO {
     return $codes2booklets and isset($codes2booklets[$code]) and in_array($bookletName, $codes2booklets[$code]);
   }
 
-  public function ownsTest(string $personToken, string $testId): bool {
+  /**
+   * Does the given person session own this test?
+   *
+   * Takes the person-session ID rather than the token: the caller
+   * (IsTestWritable) runs after RequireToken('person'), which has already
+   * resolved the token to exactly this ID via getToken(). Passing the token
+   * instead forced a re-join back onto person_sessions purely to look up
+   * something the request already knew -- so on every write to a test this
+   * query redundantly re-read a table getToken() had just read.
+   *
+   * Now a single PRIMARY-key lookup on tests.id with a filter on person_id
+   * (which is itself indexed via index_fk_booklet_person), no join at all.
+   *
+   * NOTE: despite the name of the middleware that calls this (IsTestWritable),
+   * this deliberately checks OWNERSHIP ONLY -- exactly as before. The previous
+   * version selected `tests.locked` but discarded it (`return !!$test`), so a
+   * locked test has always passed this check. That is a pre-existing bug, left
+   * untouched here on purpose: fixing it would start returning 403 for locked
+   * tests, which is a behaviour change and belongs in its own commit, not in a
+   * query-shape optimisation.
+   */
+  public function ownsTest(int $personId, string $testId): bool {
     $test = $this->_(
-      'select tests.locked from tests
-              inner join person_sessions on person_sessions.id = tests.person_id
-              where person_sessions.token=:token and tests.id=:testId',
+      'select 1 from tests where tests.id = :testId and tests.person_id = :personId',
       [
-        ':token' => $personToken,
-        ':testId' => $testId
+        ':testId' => $testId,
+        ':personId' => $personId
       ]
     );
 

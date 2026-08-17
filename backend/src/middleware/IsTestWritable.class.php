@@ -27,7 +27,11 @@ class IsTestWritable {
 
     $sessionDAO = new SessionDAO();
 
-    if (!$sessionDAO->ownsTest($authToken->getToken(), $params['test_id'])) {
+    // getId() is the person_sessions.id: every route carrying this middleware
+    // sits inside the /test group that adds RequireToken('person'), so the
+    // token has already been resolved to that ID. Passing it instead of the
+    // token string lets ownsTest() skip re-joining person_sessions.
+    if (!$sessionDAO->ownsTest($authToken->getId(), $params['test_id'])) {
       throw new HttpForbiddenException($request, "Access to test {$params['test_id']} is not provided.");
     }
 
