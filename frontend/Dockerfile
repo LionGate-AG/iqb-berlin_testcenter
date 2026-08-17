@@ -64,6 +64,34 @@ FROM ${REGISTRY_PATH}nginxinc/nginx-unprivileged:stable AS prod
 USER root
 RUN chown -R nginx:root /usr/share/nginx/html
 
+# Raise nginx's per-worker connection ceiling. These live in the base image's MAIN
+# nginx.conf, which frontend/nginx.conf cannot reach -- that file is mounted as
+# /etc/nginx/templates/default.conf.template, i.e. a server block inside http{},
+# whereas `worker_connections` is in events{} and `worker_rlimit_nofile` is
+# top-level. Hence patching the base config here rather than in nginx.conf.
+#
+# Why: this pod proxies EVERYTHING -- the /api/ REST traffic AND the /bs/public/
+# WebSockets (see nginx.conf) -- and a proxied connection consumes TWO of the
+# worker_connections budget (client side + upstream side). The stock 1024, with
+# worker_processes autotuned to 2 from the CPU limit, gave only 2x1024 = 2048
+# slots per pod (~1024 proxied connections). At 40k concurrent test takers each
+# holding a WebSocket plus HTTP keepalive, 5 pods offered ~10,240 slots against
+# a demand near 80,000 -- roughly 8x oversubscribed.
+#
+# The failure is silent and easy to misread: nginx accepts the TCP connection,
+# finds no free slot and closes it without a response, so probes report
+# `Get "http://.../health": EOF` and clients get 500/502 from the proxy -- while
+# CPU sits at ~1m of a 2000m limit and the backend's PHP logs stay completely
+# clean, because those requests never reached the backend at all.
+#
+# 16384 x 2 workers = 32768 slots/pod (~16k proxied connections). nofile must
+# cover roughly 2 fds per proxied connection, hence 40960 rather than 16384.
+RUN sed -i \
+      -e 's/^worker_processes\(.*\)$/worker_rlimit_nofile 40960;\nworker_processes\1/' \
+      -e 's/worker_connections  *[0-9]\+;/worker_connections 16384;/' \
+      /etc/nginx/nginx.conf \
+ && nginx -t
+
 USER nginx
 COPY --chown=nginx:root --from=base /usr/src/testcenter/frontend/dist/browser /usr/share/nginx/html
 COPY --chown=nginx:root frontend/nginx.conf /etc/nginx/templates/default.conf.template
