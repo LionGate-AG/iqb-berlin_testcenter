@@ -381,8 +381,22 @@ class TestDAO extends DAO {
   }
 
   // TODO use data-collection class for $statePatch (key-vale pairs)
-  public function updateTestState(int $testId, array $statePatch): array {
-    $testData = $this->_(
+  /**
+   * @param array|null $preloadedTestRow The tests row (needing only `laststate`)
+   *   when the caller has ALREADY read it and can prove the test exists -- lets
+   *   this method skip its own SELECT. Optional on purpose: callers without that
+   *   guarantee (InitDAO's seeding, the connection-lost helper) pass nothing and
+   *   keep the read plus the 404 below exactly as before.
+   *
+   *   Used by TestController::patchState, where IsTestWritable has just fetched
+   *   this identical row to authorise the request (see SessionDAO::getOwnedTest).
+   *   Re-reading it there cost a round trip on the single most frequent endpoint
+   *   in the system. Note the 404 is unreachable on that path anyway: the
+   *   middleware already 403s a test that does not exist, since its lookup keys
+   *   on (id, person_id).
+   */
+  public function updateTestState(int $testId, array $statePatch, ?array $preloadedTestRow = null): array {
+    $testData = $preloadedTestRow ?? $this->_(
       'select tests.laststate from tests where tests.id=:testId',
       [
         ':testId' => $testId
