@@ -30,10 +30,18 @@ class IsTestWritable {
     // getId() is the person_sessions.id: every route carrying this middleware
     // sits inside the /test group that adds RequireToken('person'), so the
     // token has already been resolved to that ID. Passing it instead of the
-    // token string lets ownsTest() skip re-joining person_sessions.
-    if (!$sessionDAO->ownsTest($authToken->getId(), $params['test_id'])) {
+    // token string lets the lookup skip re-joining person_sessions.
+    $ownedTest = $sessionDAO->getOwnedTest($authToken->getId(), $params['test_id']);
+
+    if ($ownedTest === null) {
       throw new HttpForbiddenException($request, "Access to test {$params['test_id']} is not provided.");
     }
+
+    // Hand the already-fetched row to the handler so it need not re-read the very
+    // same tests row. TestController::patchState uses this for its laststate
+    // read-modify-write; handlers that don't care simply ignore the attribute.
+    // Same pattern RequireToken uses to pass down 'AuthToken'.
+    $request = $request->withAttribute('OwnedTest', $ownedTest);
 
     return $handler->handle($request);
   }

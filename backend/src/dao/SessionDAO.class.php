@@ -606,16 +606,30 @@ class SessionDAO extends DAO {
    * tests, which is a behaviour change and belongs in its own commit, not in a
    * query-shape optimisation.
    */
-  public function ownsTest(int $personId, string $testId): bool {
-    $test = $this->_(
-      'select 1 from tests where tests.id = :testId and tests.person_id = :personId',
+  public function getOwnedTest(int $personId, string $testId): ?array {
+    // Returns the test row when this person session owns it, else null -- callers
+    // treat null as "not authorised" (403). Selecting `laststate` rather than a
+    // bare `1` does NOT change that authorisation semantics one bit: a row exists
+    // for exactly the same (id, person_id) pair either way. It is selected so the
+    // caller can REUSE it: TestController::patchState needs the current laststate
+    // for its read-modify-write, and used to re-read this identical row one
+    // statement later in TestDAO::updateTestState. Carrying it forward removes a
+    // whole round trip from the hottest endpoint in the system -- the periodic
+    // PATCH /test/{id}/state that every logged-in test taker repeats for the
+    // entire session (5 statements -> 4).
+    //
+    // That matters because query HOLD TIME, not connection count, is what
+    // exhausts the pool: ProxySQL logged ConnPool_get_conn_failure 65,986,174
+    // against 2,338,631 successes while multiplexing correctly, i.e. it had
+    // nothing free to hand out because connections were held waiting on queries.
+    // Every statement removed shortens that hold.
+    return $this->_(
+      'select tests.laststate from tests where tests.id = :testId and tests.person_id = :personId',
       [
         ':testId' => $testId,
         ':personId' => $personId
       ]
     );
-
-    return !!$test;
   }
 
   /**

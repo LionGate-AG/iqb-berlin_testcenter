@@ -610,18 +610,24 @@ class SessionDAOTest extends TestCase {
     $this->assertFalse($result);
   }
 
-  public function test_ownsTest() {
-    // ownsTest() now takes the person_sessions.id instead of the token string
-    // (the caller has it already from getToken(), so re-joining person_sessions
-    // was redundant). IDs come from testdata.sql's insert order:
+  public function test_getOwnedTest() {
+    // Takes the person_sessions.id, not the token string (the caller already has
+    // the id from getToken(), so re-joining person_sessions was redundant), and
+    // returns the tests ROW rather than a bool so the caller can reuse its
+    // laststate instead of re-reading the same row. IDs come from testdata.sql's
+    // insert order:
     //   id 1 = 'person-token'                  -> owns test 1 (tests.person_id = 1)
     //   id 4 = 'person-of-future-login-token'  -> owns no test
     // id 1 is also what test_getToken_person() asserts for 'person-token'.
-    $result = $this->dbc->ownsTest(1, "1");
-    $this->assertTrue($result);
+    $result = $this->dbc->getOwnedTest(1, "1");
+    $this->assertIsArray($result, 'owner gets the row back');
+    $this->assertArrayHasKey('laststate', $result, 'row carries laststate for reuse');
+    // testdata.sql seeds test 1 with laststate '{"CURRENT_UNIT_ID":"UNIT_1"}'.
+    $this->assertSame('{"CURRENT_UNIT_ID":"UNIT_1"}', $result['laststate']);
 
-    $result = $this->dbc->ownsTest(4, "1");
-    $this->assertFalse($result);
+    // Non-owner (and, identically, a non-existent test) gets null -> caller 403s.
+    $this->assertNull($this->dbc->getOwnedTest(4, "1"));
+    $this->assertNull($this->dbc->getOwnedTest(1, "99999"));
   }
 
   public function test_getOrCreateGroupToken(): void {

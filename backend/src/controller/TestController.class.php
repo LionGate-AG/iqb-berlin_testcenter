@@ -387,7 +387,16 @@ class TestController extends Controller {
       'timeStamp' => 'REQUIRED'
     ]);
 
-    $newState = self::testDAO()->updateTestState($testId, $statePatch);
+    // IsTestWritable already read this test's row to authorise the request, so
+    // pass it through rather than re-reading the same row (see
+    // SessionDAO::getOwnedTest). Falls back to null -- and therefore to
+    // updateTestState's own SELECT -- if the attribute is ever absent, so this
+    // stays correct even if the middleware is reordered or removed.
+    $newState = self::testDAO()->updateTestState(
+      $testId,
+      $statePatch,
+      $request->getAttribute('OwnedTest')
+    );
 
     $testLogs = array_map(
       fn($entry) => new TestLog(
