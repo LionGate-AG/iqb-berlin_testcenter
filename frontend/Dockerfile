@@ -90,7 +90,19 @@ RUN sed -i \
       -e 's/^worker_processes\(.*\)$/worker_rlimit_nofile 40960;\nworker_processes\1/' \
       -e 's/worker_connections  *[0-9]\+;/worker_connections 16384;/' \
       /etc/nginx/nginx.conf \
- && nginx -t
+ && nginx -t \
+ && rm -f /tmp/nginx.pid
+# The `rm` is NOT cosmetic. `nginx -t` runs here as root (this is before
+# `USER nginx`) and leaves /tmp/nginx.pid behind owned by root:root mode 644,
+# baked into the image layer. At runtime the container is uid 101 (see the
+# frontend Deployment's securityContext) and /tmp is 1777 with the sticky bit,
+# so 101 can neither overwrite nor unlink a root-owned file there -- nginx dies
+# on startup with:
+#   [emerg] open() "/tmp/nginx.pid" failed (13: Permission denied)
+# which presents as CrashLoopBackOff across every frontend pod. Verified by
+# inspecting a built image: the stale pid file is dated to the build, not the
+# base image. Keep the `nginx -t` (it catches config errors at build time rather
+# than in the cluster) but always clean up after it.
 
 USER nginx
 COPY --chown=nginx:root --from=base /usr/src/testcenter/frontend/dist/browser /usr/share/nginx/html
