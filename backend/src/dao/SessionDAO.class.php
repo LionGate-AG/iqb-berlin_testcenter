@@ -517,12 +517,27 @@ class SessionDAO extends DAO {
 
 
   public function groupTokenExists(int $workspaceId, string $groupTokenString): bool {
+    // The `left join logins on ... group_name` that used to be here was dead weight
+    // AND a latent bug. Dead weight: no column of `logins` is selected and no
+    // predicate references it, so the join could not affect the result -- but
+    // `logins.group_name` carries no index, so MySQL scanned the whole table once
+    // per call. Measured in the 2026-08-18 run: 43,325 rows examined per execution
+    // x 75,090 executions = 3,253,274,250 rows -- 99.76% of ALL row-read work in
+    // the database, against 0.21% for the four statements of the steady-state
+    // PATCH /state endpoint combined. Average 223ms per call, on the login path.
+    // Latent bug: being a LEFT JOIN on a non-unique key, it could only ever
+    // MULTIPLY rows, so `count(token)` returned the number of matching `logins`
+    // rows rather than the number of matching groups. Harmless only because the
+    // sole caller boolean-ifies it (`!!$res['count']`), but wrong on its face.
+    // Without the join this is a UNIQUE-key lookup on
+    // `login_session_groups_unique_token`: 1 row examined instead of 43,325.
+    // `count(...)` is kept rather than `select 1 ... limit 1` because an aggregate
+    // always returns a row, so `$res['count']` stays defined when nothing matches.
     $res = $this->_(
       'select
             count(token) as count
           from
             login_session_groups
-            left join logins on login_session_groups.group_name = logins.group_name
           where
             token = ? and login_session_groups.workspace_id = ?',
       [
