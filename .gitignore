@@ -67,3 +67,5 @@ scripts/helm/traefik-values.yaml
 
 # additional scripts
 /testcenter-scripts
+
+/docs_personal
