@@ -487,11 +487,6 @@ class AdminDAO extends DAO {
         ON player_file.workspace_id = fr_uses_player.workspace_id AND player_file.name = fr_uses_player.object_name
           AND player_file.type = fr_uses_player.object_type
       WHERE f.workspace_id = ?
-        AND EXISTS (
-          SELECT 1 FROM file_relations fr_uses_scheme
-          WHERE fr_uses_scheme.workspace_id = f.workspace_id AND fr_uses_scheme.subject_name = f.name
-            AND fr_uses_scheme.subject_type = f.type AND fr_uses_scheme.relationship_type = 'usesScheme'
-        )
       EOT,
       $bindParams,
       true
