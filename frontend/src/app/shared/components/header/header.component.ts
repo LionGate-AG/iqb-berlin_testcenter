@@ -59,7 +59,9 @@ export class HeaderComponent implements OnDestroy {
     });
 
     this.mainDataService.authData$.subscribe(authData => {
-      if (!authData) return;
+      // authData is briefly primed with only a token (see TokenLoginActivateGuard) before being hydrated -
+      // ignore that transient state instead of crashing on the missing claims/flags
+      if (!authData || !authData.claims) return;
       this.userRights = [];
       if (authData.claims.workspaceAdmin) {
         this.userRights.push('Verwaltung von Testinhalten');
