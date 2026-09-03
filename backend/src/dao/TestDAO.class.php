@@ -629,6 +629,39 @@ class TestDAO extends DAO {
 
     $sql = 'insert into test_logs (booklet_id, logentry, timestamp) values ' . implode(', ', $placeholders);
 
+    // PHASE-0 DIAGNOSTIC -- temporary, default OFF, never for production.
+    //
+    // Purpose: quantify the ceiling before building the async log path. Measured
+    // on 2026-09-02 at 88,443 users, this one statement was 1,171,786s of
+    // 1,353,808s of total database time -- 86.6% -- across 4,077,005 executions
+    // (avg 287ms, p50 91ms, 7.34% over 1s), while every other statement on the
+    // same request path sat at 0.00-0.02% over 1s. Four previous hypotheses about
+    // this statement were wrong (the foreign key, adding a PRIMARY KEY, removing
+    // it again, and CPU throttling), so the premise gets tested before anything
+    // is built on it.
+    //
+    // Setting TESTCENTER_SKIP_TEST_LOGS=1 skips ONLY the database round trip. All
+    // PHP-side work above -- the instanceof validation and the placeholder/param
+    // construction -- still runs, deliberately:
+    //   * it isolates the delta to the database alone, rather than conflating it
+    //     with PHP savings that the real fix will not deliver;
+    //   * the planned async path also does per-row PHP work (igbinary_serialize
+    //     plus one rPush), so keeping it here makes this measurement a usable
+    //     predictor of that design rather than an unreachable best case.
+    //
+    // Expected if the diagnosis holds: this digest disappears, total database time
+    // falls ~86%, and the >=1s tail collapses. If it does not, the diagnosis is
+    // wrong and the async work should not be built.
+    //
+    // Static cache because this is called ~4M times per run and getenv() is not free.
+    static $skip = null;
+    if ($skip === null) {
+      $skip = getenv('TESTCENTER_SKIP_TEST_LOGS') === '1';
+    }
+    if ($skip) {
+      return;
+    }
+
     $this->_($sql, $params);
   }
 
