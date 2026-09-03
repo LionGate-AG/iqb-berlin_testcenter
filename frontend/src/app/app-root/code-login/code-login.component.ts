@@ -52,8 +52,8 @@ export class CodeLoginComponent {
   constructor(private router: Router, private bs: BackendService, private mds: MainDataService,
               public assetService: AssetService) {
     const authData = this.mds.getAuthData();
-    this.inputType = authData?.viewSettings.codeInput?.type || 'text-field';
-    this.length = authData?.viewSettings.codeInput?.length;
+    this.inputType = authData?.viewSettings?.codeInput?.type || 'text-field';
+    this.length = authData?.viewSettings?.codeInput?.length;
     this.assetService.assetSlots$.subscribe(() => {
       this.illustrationImageSrc = this.assetService.getAssetSrc('codeInputIllustration');
     });
