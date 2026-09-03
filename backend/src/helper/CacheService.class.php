@@ -26,6 +26,27 @@ class CacheService {
     return true;
   }
 
+  /**
+   * The shared Redis handle, or null when the cache server is not configured or
+   * unreachable. Exposed so LogBuffer can use the SAME connection singleton and
+   * the same credentials as everything else here, rather than opening a second
+   * connection with duplicated config.
+   *
+   * Callers MUST treat null as "Redis is unavailable" and degrade gracefully --
+   * this returns null instead of throwing precisely so the test_logs write path
+   * can fall back to a synchronous INSERT rather than failing the request.
+   */
+  public static function connection(): ?Redis {
+    try {
+      if (!self::connect()) {
+        return null;
+      }
+    } catch (Throwable $throwable) {
+      return null;
+    }
+    return self::$redis;
+  }
+
   static function storeAuthentication(PersonSession $personSession): void {
     if (!self::connect()) {
       return;
