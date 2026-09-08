@@ -1571,3 +1571,178 @@ paths:
         "500":
           description: Server Error
 
+  /workspace/{ws_id}/test-ids:
+    get:
+      summary: get all test-ids of a workspace
+      description: >
+        Retrieves the ids of all tests (executed booklets) of a workspace. Used by external
+        systems (e.g. the TBA-Portal) that manage testees/results themselves and only need
+        testcenter to run the actual tests - no direct database access to testcenter is
+        required or intended for this integration, only these bearer-token secured endpoints.
+      tags:
+        - portal integration
+      parameters:
+        - in: header
+          name: Authorization
+          description: >
+            static bearer token, configured via the `ANSWERS_TOKEN` environment variable
+            (not a session AuthToken as used elsewhere in this API)
+          example: "Bearer Kor3ktur7oken9quee"
+          required: true
+        - in: path
+          name: ws_id
+          description: workspace-id
+          example: 1
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: array of test-ids
+          content:
+            application/json:
+              example: [1, 2, 3, 4, 5]
+        "401":
+          description: Authorization header missing
+        "403":
+          description: Authorization header present but token does not match ANSWERS_TOKEN
+
+  /workspace/{ws_id}/answers:
+    post:
+      summary: get all answers of a list of testees
+      description: >
+        Retrieves, for each given testee code, the answers (unit response data) of all their
+        booklets in this workspace, grouped by booklet. Used by external systems (e.g. the
+        TBA-Portal) to fetch submitted test data without direct database access to testcenter.
+      tags:
+        - portal integration
+      parameters:
+        - in: header
+          name: Authorization
+          description: >
+            static bearer token, configured via the `ANSWERS_TOKEN` environment variable
+            (not a session AuthToken as used elsewhere in this API)
+          example: "Bearer Kor3ktur7oken9quee"
+          required: true
+        - in: path
+          name: ws_id
+          description: workspace-id
+          example: 1
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        content:
+          application/json:
+            schema:
+              properties:
+                codes:
+                  type: array
+                  description: testee codes (person_sessions.code) to fetch answers for
+                  items:
+                    type: string
+            example:
+              codes:
+                - "35ea8d26-a2d7-11f1-ab36-f6c982b672c1"
+      responses:
+        "200":
+          description: >
+            answers, keyed by testee code, and a lookup of the booklets referenced by those
+            answers (label, file-id and contained unit names)
+          content:
+            application/json:
+              example:
+                answers:
+                  "35ea8d26-a2d7-11f1-ab36-f6c982b672c1":
+                    booklets:
+                      "BOOKLET.SAMPLE-1":
+                        bookletLabel: "Sample booklet"
+                        testId: 5
+                        units:
+                          "UNIT.SAMPLE":
+                            dataParts:
+                              elementCodes: "[{\"id\": \"text-field_1\", \"status\": \"VALUE_CHANGED\", \"value\": \"an answer\"}]"
+                booklets:
+                  "BOOKLET.SAMPLE-1":
+                    label: "Sample booklet"
+                    fileId: "BOOKLET.SAMPLE-1"
+                    units:
+                      - "UNIT.SAMPLE"
+        "401":
+          description: Authorization header missing
+        "403":
+          description: Authorization header present but token does not match ANSWERS_TOKEN
+
+  /workspace/{ws_id}/booklet-files:
+    post:
+      summary: get unit definitions and coding schemes of a list of booklets
+      description: >
+        Retrieves, for each unit contained in the given booklets, its player version, player
+        path, unit definition (parsed JSON, if the unit's definition resource is JSON), and
+        coding scheme (parsed JSON, if a coding scheme resource is linked). Units without a
+        coding scheme are still included (only the `codingScheme` key is omitted for them).
+        Used by external systems (e.g. the TBA-Portal) to render/correct submitted answers
+        without direct database or file access to testcenter.
+      tags:
+        - portal integration
+      parameters:
+        - in: header
+          name: Authorization
+          description: >
+            static bearer token, configured via the `ANSWERS_TOKEN` environment variable
+            (not a session AuthToken as used elsewhere in this API)
+          example: "Bearer Kor3ktur7oken9quee"
+          required: true
+        - in: path
+          name: ws_id
+          description: workspace-id
+          example: 1
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        content:
+          application/json:
+            schema:
+              properties:
+                bookletIds:
+                  type: array
+                  description: booklet file-ids (files.id, type Booklet) to fetch units of
+                  items:
+                    type: string
+            example:
+              bookletIds:
+                - "BOOKLET.SAMPLE-1"
+      responses:
+        "200":
+          description: units of the given booklets, keyed by unit file-id
+          content:
+            application/json:
+              example:
+                "UNIT.SAMPLE":
+                  name: "SAMPLE_UNIT.XML"
+                  label: "A sample unit"
+                  workspaceId: 1
+                  playerVersion:
+                    major: 6
+                    minor: 0
+                    patch: 5
+                  playerPath: "ws_1/verona-player-simple-6.0.html"
+                  unitDefinition: null
+                "UNIT.SAMPLE-2":
+                  name: "SAMPLE_UNIT2.XML"
+                  label: "A sample unit"
+                  workspaceId: 1
+                  playerVersion:
+                    major: 6
+                    minor: 0
+                    patch: 5
+                  playerPath: "ws_1/verona-player-simple-6.0.html"
+                  codingScheme:
+                    version: "3.0"
+                    variableCodings: []
+        "401":
+          description: Authorization header missing
+        "403":
+          description: Authorization header present but token does not match ANSWERS_TOKEN
+
