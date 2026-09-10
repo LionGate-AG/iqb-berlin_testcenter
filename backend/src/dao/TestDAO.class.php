@@ -602,6 +602,18 @@ class TestDAO extends DAO {
   }
 
   /**
+   * Record test-log rows.
+   *
+   * Routing, in order:
+   *   1. TESTCENTER_SKIP_TEST_LOGS=1  -> drop them (Phase-0 diagnostic, see below)
+   *   2. TESTCENTER_ASYNC_TEST_LOGS=1 -> queue them for backend/drain-logs.php,
+   *      which inserts them ~1,000 at a time (see LogBuffer for the measurements
+   *      and the at-most-once semantics this accepts)
+   *   3. otherwise                    -> insert them synchronously, as always
+   *
+   * Step 2 falls through to step 3 whenever Redis is unavailable or the queue is
+   * over its depth cap, so a cache-server outage costs latency, never audit rows.
+   *
    * @param TestLog[] $testLogs
    */
   public function addTestLogs(array $testLogs): void {
@@ -613,6 +625,52 @@ class TestDAO extends DAO {
       if (!$testLog instanceof TestLog) {
         throw new \http\Exception\InvalidArgumentException('All array elements must be TestLog instances');
       }
+    }
+
+    // PHASE-0 DIAGNOSTIC -- default OFF, never true in production.
+    //
+    // Drops test_logs entirely. It exists to measure the ceiling: on 2026-09-03
+    // at ~88k users this one statement was 947,740s of 1,157,890s of total
+    // database time (81.8%), and turning it off cut total database time 91.8%
+    // while making every surviving statement 2-3x faster. That measurement is
+    // what justified the async path; keeping the switch means it can be re-run
+    // to re-establish the ceiling after future changes.
+    //
+    // NEVER true in production: test_logs backs the customer-facing workspace
+    // log CSV (AdminDAO::getLogReportData -> LogReportOutput).
+    //
+    // Checked before LogBuffer deliberately -- "skip" must mean no rows at all,
+    // not rows queued into Redis that the drain worker then silently discards.
+    //
+    // Static because this runs millions of times per run and getenv() is not free.
+    static $skip = null;
+    if ($skip === null) {
+      $skip = getenv('TESTCENTER_SKIP_TEST_LOGS') === '1';
+    }
+    if ($skip) {
+      return;
+    }
+
+    if (LogBuffer::push($testLogs)) {
+      return;
+    }
+
+    $this->insertTestLogsNow($testLogs);
+  }
+
+  /**
+   * Insert test-log rows immediately, as one multi-row INSERT.
+   *
+   * Split out of addTestLogs() so that exactly one place builds this statement.
+   * It has two callers with different batch sizes, and they must not diverge:
+   *   * addTestLogs()          -- the synchronous fallback, 1-3 rows per call
+   *   * backend/drain-logs.php -- the drain worker, up to 1,000 rows per call
+   *
+   * @param TestLog[] $testLogs
+   */
+  public function insertTestLogsNow(array $testLogs): void {
+    if (empty($testLogs)) {
+      return;
     }
 
     $placeholders = [];

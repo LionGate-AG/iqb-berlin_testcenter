@@ -76,6 +76,11 @@ RUN mkdir ./config
 COPY backend/index.php .
 COPY backend/initialize.php .
 COPY backend/routes.php .
+# Entrypoint for the log-drainer Deployment (see the chart's templates/log-drainer).
+# Same image, different command: `php backend/drain-logs.php`. It must be copied
+# explicitly -- this stage copies named root files rather than the whole backend
+# directory, so a new top-level script is silently absent otherwise.
+COPY backend/drain-logs.php .
 COPY backend/src ./src
 
 RUN mkdir -p ../data/.schemas
