@@ -141,6 +141,12 @@ class WorkspaceDAO extends DAO {
         ':ws_id' => $this->workspaceId
       ]
     );
+    // Removing the `logins` row makes every person token under it resolve to
+    // workspaceId = null (the LEFT JOIN in SessionDAO::TOKEN_QUERY_BRANCHES),
+    // i.e. HTTP 410 "Login removed". The affected tokens are not known here, so
+    // the auth-token cache is flushed wholesale rather than left to serve a
+    // deleted login until its TTL. Admin path only -- never the request path.
+    CacheService::flushAuthTokens();
     return $this->lastAffectedRows;
   }
 
@@ -769,5 +775,9 @@ class WorkspaceDAO extends DAO {
       [],
       true
     );
+    // `validTo` is part of the cached token row and is what
+    // TimeStamp::checkExpiration() is applied to, so a wholesale rewrite of it
+    // has to invalidate the cache. Called from addLoginSource() only.
+    CacheService::flushAuthTokens();
   }
 }

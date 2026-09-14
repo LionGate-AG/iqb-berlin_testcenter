@@ -120,6 +120,11 @@ class AdminDAO extends DAO {
         ':group_name' => $groupName
       ]
     );
+    // The group token is cached in Redis (SessionDAO::getOrCreateGroupToken and
+    // ::groupTokenExists). Deleting the row here must not leave a token that still
+    // validates on the file route. Flushed wholesale rather than by key, because the
+    // deleted token is not read back and this is a rare admin action.
+    CacheService::flushGroupTokens();
   }
 
   public function deleteResultDataByPersonAndBooklet(int $workspaceId, array $setsToDelete): void {
