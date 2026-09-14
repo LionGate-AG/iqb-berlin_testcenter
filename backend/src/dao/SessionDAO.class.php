@@ -87,10 +87,26 @@ class SessionDAO extends DAO {
       throw new HttpError("Invalid token: `$tokenString`", 403);
     }
 
-    $tokenInfo = $this->_(
-      implode("\n            union\n                ", $branches) . "\n            limit 1",
-      [':token' => $tokenString]
-    );
+    // Read-through cache, PERSON TOKENS ONLY -- see the block comment on
+    // CacheService::getAuthTokenRow() for why this exists and why admin/login
+    // tokens are excluded.
+    //
+    // The cache holds the raw result ROW, so a hit and a miss run through
+    // exactly the same validation below (workspaceId null -> 410, type check,
+    // expiry). A cached entry therefore cannot bypass a check that a fresh one
+    // would fail. A miss, a disabled cache, and an unreachable Redis are all
+    // indistinguishable here on purpose: every one of them falls through to the
+    // query that has always run.
+    $cacheable = isset($branches['person']);
+    $tokenInfo = $cacheable ? CacheService::getAuthTokenRow($tokenString) : null;
+    $servedFromCache = $tokenInfo !== null;
+
+    if (!$servedFromCache) {
+      $tokenInfo = $this->_(
+        implode("\n            union\n                ", $branches) . "\n            limit 1",
+        [':token' => $tokenString]
+      );
+    }
 
     if ($tokenInfo == null) {
       throw new HttpError("Invalid token: `$tokenString`", 403);
@@ -110,7 +126,29 @@ class SessionDAO extends DAO {
         . implode("` or `", $requiredTypes) . "` required.", 403);
     }
 
-    TimeStamp::checkExpiration(0, TimeStamp::fromSQLFormat($tokenInfo['validTo']));
+    $validTo = TimeStamp::fromSQLFormat($tokenInfo['validTo']);
+    TimeStamp::checkExpiration(0, $validTo);
+
+    // Deliberately AFTER every check: a row that throws is never cached, so a
+    // removed login or an expired session cannot be pinned in Redis by the
+    // request that discovered it. Only the seven fields used below are stored,
+    // to keep the entry small and independent of what the SELECT happens to
+    // return.
+    if (!$servedFromCache and $cacheable and $tokenInfo['type'] === 'person') {
+      CacheService::storeAuthTokenRow(
+        $tokenString,
+        [
+          'token' => $tokenInfo['token'],
+          'id' => $tokenInfo['id'],
+          'type' => $tokenInfo['type'],
+          'workspaceId' => $tokenInfo['workspaceId'],
+          'mode' => $tokenInfo['mode'],
+          'validTo' => $tokenInfo['validTo'],
+          'group' => $tokenInfo['group']
+        ],
+        $validTo
+      );
+    }
 
     return new AuthToken(
       $tokenInfo['token'],
@@ -206,9 +244,74 @@ class SessionDAO extends DAO {
       $login->getGroupLabel()
     );
 
+    // READ BEFORE WRITE.
+    //
+    // This used to go straight to `insert ignore ... on duplicate key update`, on
+    // the reasoning (kept below, and still honoured) that two simultaneous logins
+    // for the same name must not create two sessions. The cost of paying for that
+    // race on EVERY login was not visible until it was measured.
+    //
+    // Measured 2026-09-11 over ~93,670 logins, that statement was
+    //
+    //     93,670 executions, 125.4 ms average, 11,749 s total = 12.7% of ALL
+    //     database time -- the second most expensive statement in the system
+    //
+    // while doing nothing at all in almost every execution: `login_sessions` held
+    // exactly 100,000 rows against 100,002 `logins`, so the table was already fully
+    // populated and not one of those 93,670 logins needed an insert. AUTO_INCREMENT
+    // stood at 2,011,220 for those 100,000 rows -- ~1.9M ids burned by attempts that
+    // were rejected as duplicates.
+    //
+    // A rejected attempt is not free. Each one:
+    //   * allocates an auto-increment value;
+    //   * takes an X lock on the existing row and REWRITES group_name to the
+    //     identical value (that is what `on duplicate key update` does -- it is an
+    //     UPDATE, not a no-op);
+    //   * re-validates FK `login_session_groups_fk (workspace_id, group_name)`,
+    //     whose parent table holds FOUR rows. Every concurrent login in a group
+    //     therefore needs a shared lock on THE SAME single parent row.
+    //
+    // That last point is the convoy: 650,465 row operations and 9,303 s on
+    // `login_sessions`, and it also collides with `update person_sessions set token`
+    // (57.7 ms avg), which needs FK `fk_person_login` against those same rows.
+    //
+    // So: look first. A hit is a UNIQUE-key lookup on `unique_login_session`
+    // (name, workspace_id) -- ~7 ms against 125.4 ms -- and writes nothing, takes no
+    // X lock, and touches no foreign key. The insert below still exists for the only
+    // case that ever needed it.
+    $session = $this->_(
+      'select id, token, group_name from login_sessions where name = :name and workspace_id = :ws_id',
+      [
+        ':name' => $login->getName(),
+        ':ws_id' => $login->getWorkspaceId()
+      ]
+    );
+
+    if ($session) {
+      // Keep group_name in sync with `logins`, which is the whole purpose of the
+      // old `on duplicate key update group_name = ?`. Now CONDITIONAL: group_name
+      // changes only when a workspace login source is re-imported, so in the steady
+      // state this write never happens -- whereas before it happened on every login.
+      if ($session['group_name'] !== $login->getGroupName()) {
+        $this->_(
+          'update login_sessions set group_name = :group_name where id = :id',
+          [
+            ':group_name' => $login->getGroupName(),
+            ':id' => $session['id']
+          ]
+        );
+      }
+
+      return new LoginSession((int) $session['id'], $session['token'], $groupToken, $login);
+    }
+
     // We don't check for existence of the sessions before inserting it because timing issues occurred: If the same
     // login was requested two times at the same moment it could happen that it was created twice.
-
+    //
+    // The SELECT above does NOT reintroduce that race: it is an optimisation for the
+    // overwhelmingly common hit, and a miss still lands on this insert, which remains
+    // the single atomic point where existence is decided. Two requests that both miss
+    // will both arrive here, and the unique key still lets exactly one of them win.
     $this->_(
       'insert ignore into login_sessions (token, name, workspace_id, group_name)
             values(:token, :name, :ws, :group_name)
@@ -226,7 +329,9 @@ class SessionDAO extends DAO {
       return new LoginSession($id, $loginToken, $groupToken, $login);
     }
 
-    // there is no way in MySQL to combine insert & select into one query, so have to retrieve it to get the id
+    // there is no way in MySQL to combine insert & select into one query, so have to retrieve it to get the id.
+    // Reached when a concurrent request inserted the row between our SELECT and our INSERT -- i.e. we lost the
+    // race the insert exists to arbitrate. Its token, not ours, is the one that counts.
     $session = $this->_(
       'select id, token from login_sessions where name = :name and workspace_id = :ws_id',
       [
@@ -344,6 +449,7 @@ class SessionDAO extends DAO {
         }
         $token = $personSession['token'];
         if (!$token or $forceUpdateToken) {
+          $previousToken = $personSession['token'];
           $token = Token::generate('person', "{$login->getGroupName()}_{$login->getName()}_$code");
           $this->_(
             'update person_sessions set token=:token where login_sessions_id = :lsi and name_suffix = :suffix',
@@ -353,6 +459,13 @@ class SessionDAO extends DAO {
               ':token' => $token
             ]
           );
+          // THE token rotation. $forceUpdateToken defaults to true, so this runs
+          // on every login (SessionController::createLoginSession /
+          // createPersonSession both take the default) -- the old token is dead
+          // the instant this UPDATE lands and must not keep resolving from
+          // cache. No-op when $previousToken was null, which is the other way
+          // into this branch. See CacheService::invalidateAuthToken().
+          CacheService::invalidateAuthToken($previousToken);
         }
         return new PersonSession(
           $loginSession,
@@ -484,6 +597,20 @@ class SessionDAO extends DAO {
   }
 
   public function getOrCreateGroupToken(int $workspaceId, string $groupName, string $groupLabel): string {
+    // Cache first. `login_session_groups` held FOUR rows in the 2026-09-11 run and
+    // still took 363,299 row operations and 1,027 s of database time, because this
+    // method blind-inserts on every login: 93,682 `insert ignore` at 4.6 ms, every
+    // one of them after the first a duplicate that writes nothing but still takes
+    // locks, plus the follow-up SELECT each of those then needs.
+    //
+    // A group token is immutable for the life of its row, so a hit here is always
+    // correct. Misses, a disabled cache and an unreachable Redis are indistinguishable
+    // and all fall through to the original insert-or-select below.
+    $cached = CacheService::getGroupToken($workspaceId, $groupName);
+    if ($cached !== null) {
+      return $cached;
+    }
+
     $newGroupToken = Token::generate('group', $groupName);
     $this->_(
       'insert ignore into login_session_groups (group_name, workspace_id, group_label, token, last_modified) values (?, ?, ?, ?, ?)',
@@ -497,6 +624,7 @@ class SessionDAO extends DAO {
     );
 
     if ($this->lastAffectedRows) {
+      CacheService::storeGroupToken($workspaceId, $groupName, $newGroupToken);
       return $newGroupToken;
     }
 
@@ -511,6 +639,8 @@ class SessionDAO extends DAO {
     if (!isset($res['token'])) {
       throw new Exception("Could not retrieve group token for `{$groupName}`.");
     }
+
+    CacheService::storeGroupToken($workspaceId, $groupName, $res['token']);
 
     return $res['token'];
   }
@@ -533,6 +663,20 @@ class SessionDAO extends DAO {
     // `login_session_groups_unique_token`: 1 row examined instead of 43,325.
     // `count(...)` is kept rather than `select 1 ... limit 1` because an aggregate
     // always returns a row, so `$res['count']` stays defined when nothing matches.
+    //
+    // CACHED (2026-09-11). This runs on GET /file/{group_token}/ws_{id}/... -- the
+    // resource route the player hits for every unit file -- and measured 175,805
+    // executions x 5.7 ms = 1,011 s in one run, all to answer a question about a
+    // four-row table.
+    //
+    // isGroupTokenValid() returns true or null, never false: only POSITIVE results
+    // are cached. A cached negative would have to be invalidated the instant the
+    // group is created, and getting that wrong would reject a legitimate token --
+    // a user-visible failure. A missing positive costs one SQL lookup.
+    if (CacheService::isGroupTokenValid($workspaceId, $groupTokenString) === true) {
+      return true;
+    }
+
     $res = $this->_(
       'select
             count(token) as count
@@ -545,7 +689,14 @@ class SessionDAO extends DAO {
         $workspaceId
       ]
     );
-    return !!$res['count'];
+
+    $exists = !!$res['count'];
+
+    if ($exists) {
+      CacheService::storeGroupTokenValid($workspaceId, $groupTokenString);
+    }
+
+    return $exists;
   }
 
   public function getTestStatus(string $personToken, string $bookletName): array {
@@ -720,6 +871,8 @@ class SessionDAO extends DAO {
   public function deletePersonToken(AuthToken $authToken): void {
     // we can not delete the session entirely, because this would delete the whole response data.
     $this->_("update person_sessions set token=null where token = :token", [':token' => $authToken->getToken()]);
+    // Logout must take effect immediately, not within the cache TTL.
+    CacheService::invalidateAuthToken($authToken->getToken());
   }
 
   /**
