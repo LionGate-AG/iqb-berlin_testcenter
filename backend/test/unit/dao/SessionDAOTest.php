@@ -624,6 +624,9 @@ class SessionDAOTest extends TestCase {
     $this->assertArrayHasKey('laststate', $result, 'row carries laststate for reuse');
     // testdata.sql seeds test 1 with laststate '{"CURRENT_UNIT_ID":"UNIT_1"}'.
     $this->assertSame('{"CURRENT_UNIT_ID":"UNIT_1"}', $result['laststate']);
+    // person_id is carried so TestDAO::updateTestState can keep the test-state
+    // cache current without another read.
+    $this->assertEquals(1, $result['person_id'], 'row carries the owning person');
 
     // Non-owner (and, identically, a non-existent test) gets null -> caller 403s.
     $this->assertNull($this->dbc->getOwnedTest(4, "1"));

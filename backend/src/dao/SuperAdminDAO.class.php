@@ -241,11 +241,23 @@ class SuperAdminDAO extends DAO {
 
   public function deleteWorkspaces(array $wsIds): void {
     foreach ($wsIds as $wsId) {
+      // Deleting a workspace cascades down to its tests rows; read their ids back
+      // so exactly their cached state can be dropped.
+      $deletedTests = $this->_(
+        'SELECT tests.id
+          FROM tests
+          INNER JOIN person_sessions ON tests.person_id = person_sessions.id
+          INNER JOIN login_sessions ON person_sessions.login_sessions_id = login_sessions.id
+          WHERE login_sessions.workspace_id = :ws_id',
+        [':ws_id' => $wsId],
+        true
+      );
       $this->_(
         'delete from workspaces
                 where workspaces.id = :ws_id',
         [':ws_id' => $wsId]
       );
+      CacheService::dropTestStates(array_column($deletedTests, 'id'));
     }
     // TODO ROLLBACK if one fails!
   }

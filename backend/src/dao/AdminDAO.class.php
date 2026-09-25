@@ -113,6 +113,20 @@ class AdminDAO extends DAO {
   }
 
   public function deleteResultData(int $workspaceId, string $groupName): void {
+    // Read back which tests the cascade below removes, so exactly their cached
+    // state can be dropped afterwards (CacheService::dropTestStates).
+    $deletedTests = $this->_(
+      'SELECT tests.id
+        FROM tests
+        INNER JOIN person_sessions ON tests.person_id = person_sessions.id
+        INNER JOIN login_sessions ON person_sessions.login_sessions_id = login_sessions.id
+        WHERE login_sessions.workspace_id = :workspace_id AND login_sessions.group_name = :group_name',
+      [
+        ':workspace_id' => $workspaceId,
+        ':group_name' => $groupName
+      ],
+      true
+    );
     $this->_(
       "delete from login_session_groups where group_name = :group_name and workspace_id = :workspace_id",
       [
@@ -125,6 +139,9 @@ class AdminDAO extends DAO {
     // validates on the file route. Flushed wholesale rather than by key, because the
     // deleted token is not read back and this is a rare admin action.
     CacheService::flushGroupTokens();
+    // The delete cascades login_sessions -> person_sessions -> tests; cached test
+    // ownership/state for those rows must go with them.
+    CacheService::dropTestStates(array_column($deletedTests, 'id'));
   }
 
   public function deleteResultDataByPersonAndBooklet(int $workspaceId, array $setsToDelete): void {
@@ -150,9 +167,20 @@ class AdminDAO extends DAO {
       true
     );
 
+    $deletedTests = $this->_(
+      'SELECT tests.id
+        FROM tests
+        INNER JOIN person_sessions ON tests.person_id = person_sessions.id
+        INNER JOIN login_sessions ON person_sessions.login_sessions_id = login_sessions.id
+        WHERE login_sessions.workspace_id = :workspace_id
+          AND (login_sessions.name, person_sessions.code, person_sessions.name_suffix, tests.name) IN (' . implode(',', $placeholders) . ')',
+      $params,
+      true
+    );
+
     $this->_(
       "
-      delete tests 
+      delete tests
        from tests
        inner join person_sessions on tests.person_id = person_sessions.id
        inner join login_sessions on person_sessions.login_sessions_id = login_sessions.id
@@ -160,6 +188,7 @@ class AdminDAO extends DAO {
           and (login_sessions.name, person_sessions.code, person_sessions.name_suffix, tests.name) in (" . implode(',', $placeholders) . ")" ,
       $params
     );
+    CacheService::dropTestStates(array_column($deletedTests, 'id'));
 
     foreach ($affectedGroups as $row) {
       $this->_('
@@ -302,9 +331,16 @@ class AdminDAO extends DAO {
 
     $testSessionsData = $this->_($sql, $params, true);
 
+    // Cached states first (one MGET): with write-behind (TestStateBuffer) the
+    // table can lag the cache by a drain interval.
+    $cachedLaststates = CacheService::getCachedLaststates(array_column($testSessionsData, 'test_id'));
+
     $sessionChangeMessages = new SessionChangeMessageArray();
 
     foreach ($testSessionsData as $testSession) {
+      if (array_key_exists((int) $testSession['test_id'], $cachedLaststates)) {
+        $testSession['testState'] = $cachedLaststates[(int) $testSession['test_id']];
+      }
       $testState = $this->getTestFullState($testSession);
 
       $sessionChangeMessage = SessionChangeMessage::session(
