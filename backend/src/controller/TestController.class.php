@@ -157,11 +157,19 @@ class TestController extends Controller {
     $resourceFile = $workspace->getWorkspacePath() . '/' . $path;
 
     if (Storage::isObjectStore()) {
+      // Signing is local and cheap; exists() is a ~50ms blocking S3 round trip
+      // that holds this worker. Every test taker requests the same few files, so
+      // on a hit we skip both. See CacheService::getPresignedUrl().
+      $cachedUrl = CacheService::getPresignedUrl($workspaceId, $path);
+      if ($cachedUrl !== null) {
+        return $response->withStatus(302)->withHeader('Location', $cachedUrl);
+      }
       $logical = Storage::toLogical($resourceFile);
       if ($logical === null or !Storage::driver()->exists($logical)) {
         throw new HttpNotFoundException($request, "File not found: `$path`");
       }
       $url = Storage::driver()->presignGet($logical, SystemConfig::$storage_presignTtl);
+      CacheService::storePresignedUrl($workspaceId, $path, $url);
       return $response->withStatus(302)->withHeader('Location', $url);
     }
 

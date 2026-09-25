@@ -435,6 +435,86 @@ class CacheService {
     self::flushByPrefix(self::GROUP_TOKEN_PREFIX, self::GROUP_TOKEN_VALID_PREFIX);
   }
 
+  // ===========================================================================
+  // PRESIGNED RESOURCE URLS
+  // ===========================================================================
+
+  /** <workspaceId>:<path> -> presigned GET url. */
+  private const PRESIGNED_URL_PREFIX = 'presigned-url:';
+
+  /**
+   * Margin between how long we keep a signed URL and how long the signature is
+   * actually valid for. An entry handed out in its final second still has this
+   * much life left by the time the client follows the redirect.
+   */
+  private const PRESIGNED_URL_MARGIN = 300;
+
+  /**
+   * Why this cache exists: TestController::getFile() served every resource with
+   * a blocking Storage::driver()->exists() call before signing. Measured on
+   * tc-dev 2026-09-22, that round trip costs ~50ms -- ~45ms of which is a fresh
+   * TLS handshake, because the SDK does not reuse the connection -- and it holds
+   * a PHP-FPM worker for the whole of it.
+   *
+   * Every test taker fetches the same handful of files (the unit definitions and
+   * the ~3.1MB player HTML), so a 99,227-user run made ~700,000 identical S3
+   * round trips. During the spawn burst that exhausted pm.max_children (300) and
+   * nginx shed the overflow as limit_conn 503s: ~10,300 of them, which was
+   * essentially every failure in that run.
+   *
+   * Caching the signed URL collapses that to one S3 round trip per file per TTL.
+   *
+   * Replacing a file at the same key needs no invalidation -- the signature
+   * covers the key, not the object -- so a cached URL serves the NEW content.
+   * Only deletion leaves a stale entry, which is why deleteFiles() flushes.
+   */
+  public static function getPresignedUrl(int $workspaceId, string $path): ?string {
+    if (!self::authTokenCacheEnabled() or self::presignedUrlTtl() <= 0) {
+      return null;
+    }
+    $redis = self::connection();
+    if ($redis === null) {
+      return null;
+    }
+    try {
+      $url = $redis->get(self::PRESIGNED_URL_PREFIX . $workspaceId . ':' . $path);
+    } catch (Throwable $throwable) {
+      return null;
+    }
+    return (is_string($url) and $url !== '') ? $url : null;
+  }
+
+  public static function storePresignedUrl(int $workspaceId, string $path, string $url): void {
+    $ttl = self::presignedUrlTtl();
+    if (!self::authTokenCacheEnabled() or $ttl <= 0 or $url === '') {
+      return;
+    }
+    $redis = self::connection();
+    if ($redis === null) {
+      return;
+    }
+    try {
+      $redis->set(self::PRESIGNED_URL_PREFIX . $workspaceId . ':' . $path, $url, $ttl);
+    } catch (Throwable $throwable) {
+      // Caching is an optimisation; never let it fail a request.
+    }
+  }
+
+  /** Drop every cached signed URL. For file deletion. */
+  public static function flushPresignedUrls(): void {
+    self::flushByPrefix(self::PRESIGNED_URL_PREFIX);
+  }
+
+  /**
+   * Deliberately SHORTER than the signature's own lifetime by
+   * PRESIGNED_URL_MARGIN, so a cached URL can never outlive the signature it
+   * carries. Returns 0 -- caching off -- when the configured TTL is too short
+   * for the margin to leave anything useful.
+   */
+  private static function presignedUrlTtl(): int {
+    return max(0, SystemConfig::$storage_presignTtl - self::PRESIGNED_URL_MARGIN);
+  }
+
   static function storeAuthentication(PersonSession $personSession): void {
     if (!self::connect()) {
       return;
