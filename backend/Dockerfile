@@ -81,6 +81,8 @@ COPY backend/routes.php .
 # explicitly -- this stage copies named root files rather than the whole backend
 # directory, so a new top-level script is silently absent otherwise.
 COPY backend/drain-logs.php .
+# Entrypoint for the state-drainer Deployment (templates/state-drainer); same reason.
+COPY backend/drain-test-states.php .
 COPY backend/src ./src
 
 RUN mkdir -p ../data/.schemas

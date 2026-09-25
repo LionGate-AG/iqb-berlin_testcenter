@@ -26,7 +26,7 @@ class TestDAO extends DAO {
       '',
       (bool) $test['locked'],
       (bool) $test['running'],
-      JSON::decode($test['laststate'])
+      JSON::decode(self::currentLaststate((int) $test['id'], $test['laststate']))
     );
   }
 
@@ -43,9 +43,16 @@ class TestDAO extends DAO {
         ':file_id' => $testName->bookletFileId
       ]
     );
+    $testId = (int) $this->pdoDBhandle->lastInsertId();
+
+    // Seed the test-state cache so the first PATCH is already a hit. This also
+    // overwrites any stale entry at this id: after a TRUNCATE resets
+    // AUTO_INCREMENT, test ids are reused, and a leftover entry could otherwise
+    // hand one user the previous run's state for the same id.
+    CacheService::storeTestState($testId, $personId, json_encode($state));
 
     return new TestData(
-      (int) $this->pdoDBhandle->lastInsertId(),
+      $testId,
       $testName->name,
       $testName->bookletFileId,
       $bookletLabel,
@@ -77,7 +84,7 @@ class TestDAO extends DAO {
       '',
       (bool) $test['locked'],
       (bool) $test['running'],
-      JSON::decode($test['laststate'])
+      JSON::decode(self::currentLaststate((int) $test['id'], $test['laststate']))
     );
   }
 
@@ -339,7 +346,7 @@ class TestDAO extends DAO {
       ]
     );
 
-    return ($test) ? JSON::decode($test['laststate'], true) : [];
+    return ($test) ? JSON::decode(self::currentLaststate($testId, $test['laststate']), true) : [];
   }
 
   // TODO use data-collection class
@@ -375,6 +382,7 @@ class TestDAO extends DAO {
       throw new HttpError("Test not found", 404);
     }
 
+    $testSession['testState'] = self::currentLaststate($testId, $testSession['testState']);
     $testSession['laststate'] = $this->getTestFullState($testSession);
 
     return $testSession;
@@ -396,8 +404,10 @@ class TestDAO extends DAO {
    *   on (id, person_id).
    */
   public function updateTestState(int $testId, array $statePatch, ?array $preloadedTestRow = null): array {
-    $testData = $preloadedTestRow ?? $this->_(
-      'select tests.laststate from tests where tests.id=:testId',
+    // Cache before table: with write-behind the cached state may be newer than
+    // the row, and merging onto the row would write an older state back.
+    $testData = $preloadedTestRow ?? CacheService::getCachedTestState($testId) ?? $this->_(
+      'SELECT tests.laststate, tests.person_id FROM tests WHERE tests.id = :testId',
       [
         ':testId' => $testId
       ]
@@ -410,17 +420,80 @@ class TestDAO extends DAO {
     $oldState = $testData['laststate'] ? JSON::decode($testData['laststate'], true) : [];
     // TODO add column laststate_update_ts analogous to unit_state to avoid race conditions
     $newState = State::applyPatch($statePatch, $oldState);
+    $newStateJson = json_encode((object)$newState['newState']);
+
+    // Write-behind (TestStateBuffer): the state goes to the cache and is written to
+    // the table by backend/drain-test-states.php within one drain interval. Falls
+    // through to the synchronous UPDATE below when buffering is off or Redis
+    // refuses, so an outage costs database load, never a lost state.
+    if (isset($testData['person_id']) and TestStateBuffer::push($testId, (int) $testData['person_id'], $newStateJson)) {
+      return $newState['newState'];
+    }
 
     $this->_(
       'update tests set laststate = :laststate, timestamp_server = :timestamp where id = :id',
       [
-        ':laststate' => json_encode((object)$newState['newState']),
+        ':laststate' => $newStateJson,
         ':id' => $testId,
         ':timestamp' => TimeStamp::toSQLFormat(TimeStamp::now())
       ]
     );
 
+    // This is the only statement that writes laststate, so this is the one place
+    // the test-state cache has to be kept current (see CacheService::getOwnedTestRow).
+    // rowCount() is CHANGED rows here, not matched rows: an identical state written
+    // within the same second reports 0 although the row exists. 0 therefore only
+    // drops the entry -- the next read re-populates it from the table -- rather than
+    // being treated as "test gone".
+    if (isset($testData['person_id']) and $this->lastAffectedRows > 0) {
+      CacheService::storeTestState($testId, (int) $testData['person_id'], $newStateJson);
+    } else {
+      CacheService::invalidateTestState($testId);
+    }
+
     return $newState['newState'];
+  }
+
+  /**
+   * Write buffered states to the table as ONE multi-row UPDATE. For the drainer
+   * (backend/drain-test-states.php) only. Rows of tests deleted meanwhile simply
+   * match nothing -- the join only touches rows that still exist.
+   *
+   * Ids are inlined as integer literals rather than bound: bound values arrive as
+   * strings, which would type the CTE column as a string and turn the join on
+   * tests.id into a comparison that cannot use the primary key.
+   *
+   * @param array<int, string> $laststates testId => laststate JSON
+   * @return int rows changed
+   */
+  public function writeTestStatesNow(array $laststates): int {
+    if (empty($laststates)) {
+      return 0;
+    }
+    $rows = [];
+    $params = [':timestamp' => TimeStamp::toSQLFormat(TimeStamp::now())];
+    $index = 0;
+    foreach ($laststates as $testId => $laststate) {
+      $rows[] = 'ROW(' . (int) $testId . ", :s$index)";
+      $params[":s$index"] = $laststate;
+      $index++;
+    }
+    $this->_(
+      'WITH pending (id, laststate) AS (VALUES ' . implode(', ', $rows) . ')
+      UPDATE tests INNER JOIN pending ON tests.id = pending.id
+      SET tests.laststate = pending.laststate, tests.timestamp_server = :timestamp',
+      $params
+    );
+    return (int) $this->lastAffectedRows;
+  }
+
+  /**
+   * The current laststate of a test: the cached value when there is one -- it may
+   * not have been written back yet (TestStateBuffer) -- otherwise the table's.
+   */
+  private static function currentLaststate(int $testId, ?string $tableLaststate): ?string {
+    $cached = CacheService::getCachedTestState($testId);
+    return ($cached === null) ? $tableLaststate : $cached['laststate'];
   }
 
   public function getUnitState(int $testId, string $unitName): array {

@@ -134,6 +134,14 @@ class Workspace {
 
     $this->workspaceDAO->updateContentTypeBasedOnRemainingTesttakers();
 
+    // A signed URL outlives the object it points at, so a deleted resource would
+    // keep being served from cache until its TTL. The deleted paths are known
+    // here, but the cache is keyed per workspace+path and deletion is a rare
+    // admin action, so flushing wholesale is simpler than tracking them.
+    if ($deletionReport->deleted) {
+      CacheService::flushPresignedUrls();
+    }
+
     return $deletionReport;
   }
 

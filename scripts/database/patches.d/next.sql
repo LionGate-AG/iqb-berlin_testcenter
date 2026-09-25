@@ -38,3 +38,39 @@ ALTER TABLE test_logs
 
 ALTER TABLE unit_logs
   ADD COLUMN id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY FIRST;
+
+-- Drop secondary indexes that duplicate the PRIMARY KEY or are a left prefix of
+-- another index on the same table.
+--
+-- Every INSERT maintains every B-tree on its table, and the onboarding path inserts
+-- one row each into login_sessions, person_sessions and tests. In the 2026-09-23
+-- fresh-onboarding run (97,886 logins from an empty database) those inserts
+-- averaged 170ms, 190ms and 334ms under contention. This removes 3 of the 7
+-- B-trees on login_sessions, 2 of the 5 on person_sessions and 1 of the 3 on tests.
+--
+-- Each dropped index is covered by a remaining one, so lookups and foreign keys keep
+-- an index with the same leading column:
+--   login_sessions.index_fk_login_session_login (id)         -> PRIMARY (id)
+--   login_sessions.index_fk_logins (name)                    -> unique_login_session (name, workspace_id)
+--   login_sessions.index_fk_login_workspace (workspace_id)   -> login_sessions_groups_fk (workspace_id, group_name)
+--                                                               (also serves FK fk_login_workspace)
+--   person_sessions.person_sessions_id_uindex (id)           -> PRIMARY (id)
+--   person_sessions.index_fk_person_login (login_sessions_id) -> unique_person_session (login_sessions_id, name_suffix)
+--                                                               (also serves FK fk_person_login)
+--   tests.index_fk_booklet_person (person_id)                -> person_id (person_id, name)
+--                                                               (also serves FK fk_booklet_person)
+--
+-- Dropping a secondary index is an in-place, metadata-only change in InnoDB; it does
+-- not rebuild the table or block DML.
+
+ALTER TABLE login_sessions
+  DROP INDEX index_fk_login_session_login,
+  DROP INDEX index_fk_logins,
+  DROP INDEX index_fk_login_workspace;
+
+ALTER TABLE person_sessions
+  DROP INDEX person_sessions_id_uindex,
+  DROP INDEX index_fk_person_login;
+
+ALTER TABLE tests
+  DROP INDEX index_fk_booklet_person;

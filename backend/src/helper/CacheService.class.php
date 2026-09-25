@@ -435,6 +435,329 @@ class CacheService {
     self::flushByPrefix(self::GROUP_TOKEN_PREFIX, self::GROUP_TOKEN_VALID_PREFIX);
   }
 
+  // ===========================================================================
+  // PRESIGNED RESOURCE URLS
+  // ===========================================================================
+
+  /** <workspaceId>:<path> -> presigned GET url. */
+  private const PRESIGNED_URL_PREFIX = 'presigned-url:';
+
+  /**
+   * Margin between how long we keep a signed URL and how long the signature is
+   * actually valid for. An entry handed out in its final second still has this
+   * much life left by the time the client follows the redirect.
+   */
+  private const PRESIGNED_URL_MARGIN = 300;
+
+  /**
+   * Why this cache exists: TestController::getFile() served every resource with
+   * a blocking Storage::driver()->exists() call before signing. Measured on
+   * tc-dev 2026-09-22, that round trip costs ~50ms -- ~45ms of which is a fresh
+   * TLS handshake, because the SDK does not reuse the connection -- and it holds
+   * a PHP-FPM worker for the whole of it.
+   *
+   * Every test taker fetches the same handful of files (the unit definitions and
+   * the ~3.1MB player HTML), so a 99,227-user run made ~700,000 identical S3
+   * round trips. During the spawn burst that exhausted pm.max_children (300) and
+   * nginx shed the overflow as limit_conn 503s: ~10,300 of them, which was
+   * essentially every failure in that run.
+   *
+   * Caching the signed URL collapses that to one S3 round trip per file per TTL.
+   *
+   * Replacing a file at the same key needs no invalidation -- the signature
+   * covers the key, not the object -- so a cached URL serves the NEW content.
+   * Only deletion leaves a stale entry, which is why deleteFiles() flushes.
+   */
+  public static function getPresignedUrl(int $workspaceId, string $path): ?string {
+    if (!self::authTokenCacheEnabled() or self::presignedUrlTtl() <= 0) {
+      return null;
+    }
+    $redis = self::connection();
+    if ($redis === null) {
+      return null;
+    }
+    try {
+      $url = $redis->get(self::PRESIGNED_URL_PREFIX . $workspaceId . ':' . $path);
+    } catch (Throwable $throwable) {
+      return null;
+    }
+    return (is_string($url) and $url !== '') ? $url : null;
+  }
+
+  public static function storePresignedUrl(int $workspaceId, string $path, string $url): void {
+    $ttl = self::presignedUrlTtl();
+    if (!self::authTokenCacheEnabled() or $ttl <= 0 or $url === '') {
+      return;
+    }
+    $redis = self::connection();
+    if ($redis === null) {
+      return;
+    }
+    try {
+      $redis->set(self::PRESIGNED_URL_PREFIX . $workspaceId . ':' . $path, $url, $ttl);
+    } catch (Throwable $throwable) {
+      // Caching is an optimisation; never let it fail a request.
+    }
+  }
+
+  /** Drop every cached signed URL. For file deletion. */
+  public static function flushPresignedUrls(): void {
+    self::flushByPrefix(self::PRESIGNED_URL_PREFIX);
+  }
+
+  /**
+   * Deliberately SHORTER than the signature's own lifetime by
+   * PRESIGNED_URL_MARGIN, so a cached URL can never outlive the signature it
+   * carries. Returns 0 -- caching off -- when the configured TTL is too short
+   * for the margin to leave anything useful.
+   */
+  private static function presignedUrlTtl(): int {
+    return max(0, SystemConfig::$storage_presignTtl - self::PRESIGNED_URL_MARGIN);
+  }
+
+  // ===========================================================================
+  // Test ownership + laststate
+  //
+  // WHY: every request through IsTestWritable -- above all the periodic
+  // PATCH /test/{id}/state that each test taker repeats for the whole session --
+  // ran `SELECT laststate FROM tests WHERE id = ? AND person_id = ?`. Measured on
+  // the fresh-onboarding run of 2026-09-23 (97,886 users):
+  //
+  //     2,192 executions/s x 297ms = ~650 connections held continuously
+  //     44% of all database time -- the single largest statement
+  //
+  // The statement is fast in isolation (p50 0.18ms); the cost was that it held a
+  // pooled connection while queueing behind everything else, and the pool was
+  // exhausted: 178,762 "Max connect timeout" 500s, ~70% of them on this route.
+  //
+  // WHAT IS CACHED: the same two facts the SELECT established -- which person owns
+  // the test, and its current laststate JSON -- so a hit feeds the identical
+  // authorisation and read-modify-write code a miss would.
+  //
+  // WHY IT IS SAFE TO CACHE:
+  //   - Ownership never changes while the row exists: nothing updates
+  //     tests.person_id.
+  //   - laststate has exactly ONE writer, TestDAO::updateTestState, which writes
+  //     through here after every UPDATE. TestDAO::createTest seeds the entry,
+  //     which also overwrites any stale entry left at a reused id.
+  //   - Rows only disappear by cascade from the admin deletes in AdminDAO and
+  //     SuperAdminDAO, which call dropTestStates() for the deleted ids.
+  //   - A cached owner that does not match the caller returns null, NOT a denial:
+  //     the caller then asks the database, which stays authoritative.
+  //   - Without write-behind (below) the database is still written on every
+  //     PATCH and only the read moves here.
+  //
+  // Positive entries only, as with group tokens. Gated by the same switch and TTL
+  // as the auth-token cache; each write refreshes the TTL, so an active session
+  // stays warm and an idle one falls back to one SELECT.
+  //
+  // WRITE-BEHIND (2026-09-25, TestStateBuffer): with TESTCENTER_BUFFER_TEST_STATE
+  // the PATCH no longer UPDATEs the table at all. The new state is written HERE,
+  // without a TTL, and flushed to MySQL by backend/drain-test-states.php every
+  // ~2s. While an entry is pending, this cache -- not the table -- holds the
+  // current state, so every reader of laststate must ask the cache first
+  // (getCachedTestState) and only fall back to the table on a miss. A miss is
+  // always safe: an entry is only ever absent once it has been written back.
+  // ===========================================================================
+
+  /**
+   * <testId> -> {"p": person_sessions.id, "s": tests.laststate (JSON string or null)}.
+   * Public so TestStateBuffer writes and settles the very same keys.
+   */
+  public const TEST_STATE_PREFIX = 'test-state:';
+
+  /**
+   * The cached tests row -- ['laststate' => ?string, 'person_id' => int] -- for
+   * $testId regardless of who owns it; null on a miss, on a malformed entry, or
+   * when Redis is off/unreachable. Callers MUST fall back to the database on null.
+   *
+   * @return array{laststate: ?string, person_id: int}|null
+   */
+  public static function getCachedTestState(int $testId): ?array {
+    if (!self::authTokenCacheEnabled()) {
+      return null;
+    }
+    $redis = self::connection();
+    if ($redis === null) {
+      return null;
+    }
+    try {
+      $raw = $redis->get(self::TEST_STATE_PREFIX . $testId);
+    } catch (Throwable $throwable) {
+      return null;
+    }
+    return self::decodeTestStateEntry($raw);
+  }
+
+  /**
+   * The cached laststate of each of $testIds that has an entry, as one MGET.
+   * Ids without an entry are absent from the result; the caller keeps the
+   * table's value for those.
+   *
+   * @param int[] $testIds
+   * @return array<int, ?string> testId => laststate
+   */
+  public static function getCachedLaststates(array $testIds): array {
+    if (!self::authTokenCacheEnabled() or empty($testIds)) {
+      return [];
+    }
+    $redis = self::connection();
+    if ($redis === null) {
+      return [];
+    }
+    $testIds = array_values(array_unique(array_map('intval', $testIds)));
+    try {
+      $raws = $redis->mGet(array_map(fn(int $id) => self::TEST_STATE_PREFIX . $id, $testIds));
+    } catch (Throwable $throwable) {
+      return [];
+    }
+    $laststates = [];
+    foreach ($testIds as $index => $testId) {
+      $entry = self::decodeTestStateEntry($raws[$index] ?? false);
+      if ($entry !== null) {
+        $laststates[$testId] = $entry['laststate'];
+      }
+    }
+    return $laststates;
+  }
+
+  /**
+   * @return array{laststate: ?string, person_id: int}|null
+   */
+  public static function decodeTestStateEntry(mixed $raw): ?array {
+    if (!is_string($raw) or $raw === '') {
+      return null;
+    }
+    $entry = json_decode($raw, true);
+    if (
+      !is_array($entry)
+      or !isset($entry['p'])
+      or !array_key_exists('s', $entry)
+      or !(is_string($entry['s']) or $entry['s'] === null)
+    ) {
+      return null;
+    }
+    return ['laststate' => $entry['s'], 'person_id' => (int) $entry['p']];
+  }
+
+  /** TTL an entry gets once it is no longer pending (TestStateBuffer::settle). */
+  public static function testStateTtl(): int {
+    return self::authTokenTtl();
+  }
+
+  public static function encodeTestStateEntry(int $personId, ?string $laststate): string {
+    return json_encode(['p' => $personId, 's' => $laststate]);
+  }
+
+  /**
+   * The row getOwnedTest() would return -- ['laststate' => ?string, 'person_id' =>
+   * int] -- when the cache knows $personId owns $testId; null on a miss, on an
+   * owner mismatch, or when Redis is off/unreachable. Callers MUST fall back to the
+   * database on null.
+   *
+   * @return array{laststate: ?string, person_id: int}|null
+   */
+  public static function getOwnedTestRow(int $testId, int $personId): ?array {
+    $entry = self::getCachedTestState($testId);
+    if ($entry === null or $entry['person_id'] !== $personId) {
+      return null;
+    }
+    return $entry;
+  }
+
+  /**
+   * Read-through fill after a cache miss: SET NX, never overwriting.
+   *
+   * A miss followed by a table read races with a PATCH that buffers a newer state
+   * for the same test in between. A plain SET would then replace that pending
+   * entry with the older table value, and the drainer would write the older value
+   * back -- losing the update. NX lets the pending entry win.
+   */
+  public static function populateTestState(int $testId, int $personId, ?string $laststate): void {
+    if (!self::authTokenCacheEnabled()) {
+      return;
+    }
+    $redis = self::connection();
+    if ($redis === null) {
+      return;
+    }
+    try {
+      $redis->set(
+        self::TEST_STATE_PREFIX . $testId,
+        self::encodeTestStateEntry($personId, $laststate),
+        ['nx', 'ex' => self::authTokenTtl()]
+      );
+    } catch (Throwable $throwable) {
+      // Only a missed fill; the next read asks the table again.
+    }
+  }
+
+  public static function storeTestState(int $testId, int $personId, ?string $laststate): void {
+    if (!self::authTokenCacheEnabled()) {
+      return;
+    }
+    $redis = self::connection();
+    if ($redis === null) {
+      return;
+    }
+    $key = self::TEST_STATE_PREFIX . $testId;
+    try {
+      $redis->set($key, self::encodeTestStateEntry($personId, $laststate), self::authTokenTtl());
+    } catch (Throwable $throwable) {
+      // A failed write must not leave the PREVIOUS state behind: the next PATCH
+      // would merge into it and write the older state back to the database. Try
+      // to drop the key instead; if Redis is unreachable for that too, the next
+      // read most likely fails as well and falls back to the table.
+      self::invalidateTestState($testId);
+    }
+  }
+
+  public static function invalidateTestState(int $testId): void {
+    if (!self::authTokenCacheEnabled()) {
+      return;
+    }
+    $redis = self::connection();
+    if ($redis === null) {
+      return;
+    }
+    try {
+      $redis->unlink(self::TEST_STATE_PREFIX . $testId);
+    } catch (Throwable $throwable) {
+      // Bounded by the TTL.
+    }
+  }
+
+  /**
+   * Drop the entries of tests that were just deleted, pending or not, for the
+   * admin deletes that cascade to `tests`.
+   *
+   * By id rather than by prefix: with write-behind, entries of OTHER tests may
+   * still be pending, and a wholesale flush would silently discard their
+   * not-yet-written state. Dropping a deleted test's pending state is correct --
+   * its row is gone, and the drainer's UPDATE would match nothing anyway.
+   *
+   * @param int[] $testIds
+   */
+  public static function dropTestStates(array $testIds): void {
+    if (!self::authTokenCacheEnabled() or empty($testIds)) {
+      return;
+    }
+    $redis = self::connection();
+    if ($redis === null) {
+      return;
+    }
+    $testIds = array_values(array_unique(array_map('intval', $testIds)));
+    try {
+      foreach (array_chunk($testIds, 1000) as $chunk) {
+        $redis->unlink(array_map(fn(int $id) => self::TEST_STATE_PREFIX . $id, $chunk));
+        $redis->sRem(TestStateBuffer::KEY_PENDING, ...$chunk);
+      }
+    } catch (Throwable $throwable) {
+      // Leftover entries only authorise PATCHes that then write to no row, and
+      // expire with the TTL once the drainer has settled them.
+    }
+  }
+
   static function storeAuthentication(PersonSession $personSession): void {
     if (!self::connect()) {
       return;

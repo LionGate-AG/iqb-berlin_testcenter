@@ -157,11 +157,19 @@ class TestController extends Controller {
     $resourceFile = $workspace->getWorkspacePath() . '/' . $path;
 
     if (Storage::isObjectStore()) {
+      // Signing is local and cheap; exists() is a ~50ms blocking S3 round trip
+      // that holds this worker. Every test taker requests the same few files, so
+      // on a hit we skip both. See CacheService::getPresignedUrl().
+      $cachedUrl = CacheService::getPresignedUrl($workspaceId, $path);
+      if ($cachedUrl !== null) {
+        return $response->withStatus(302)->withHeader('Location', $cachedUrl);
+      }
       $logical = Storage::toLogical($resourceFile);
       if ($logical === null or !Storage::driver()->exists($logical)) {
         throw new HttpNotFoundException($request, "File not found: `$path`");
       }
       $url = Storage::driver()->presignGet($logical, SystemConfig::$storage_presignTtl);
+      CacheService::storePresignedUrl($workspaceId, $path, $url);
       return $response->withStatus(302)->withHeader('Location', $url);
     }
 
@@ -575,9 +583,21 @@ class TestController extends Controller {
       $response = $response->withHeader('SubscribeToken', $token);
     }
 
-    $testSession = self::testDAO()->getTestSession($testId);
-    if (isset($testSession['laststate']['CONNECTION']) && ($testSession['laststate']['CONNECTION'] == 'LOST')) {
-      self::updateTestState($testId, $testSession, 'CONNECTION', 'POLLING');
+    // getTestSession() is a 4-table join, and it only matters when CONNECTION is
+    // LOST. In the 2026-09-23 fresh-onboarding run it ran once per test start
+    // (90,071x) at 264ms mean under contention -- the second-largest onboarding
+    // statement. The test-state cache holds the same laststate, so when it says
+    // "not LOST" the join is skipped. A miss (or another person's test) falls
+    // through to the query exactly as before.
+    /* @var $authToken AuthToken */
+    $authToken = $request->getAttribute('AuthToken');
+    $cachedTest = CacheService::getOwnedTestRow($testId, $authToken->getId());
+    $cachedState = $cachedTest ? JSON::decode($cachedTest['laststate'], true) : null;
+    if (($cachedState === null) or (($cachedState['CONNECTION'] ?? null) == 'LOST')) {
+      $testSession = self::testDAO()->getTestSession($testId);
+      if (isset($testSession['laststate']['CONNECTION']) && ($testSession['laststate']['CONNECTION'] == 'LOST')) {
+        self::updateTestState($testId, $testSession, 'CONNECTION', 'POLLING');
+      }
     }
 
     return $response->withJson($commands);

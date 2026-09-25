@@ -762,7 +762,7 @@ class SessionDAO extends DAO {
    * query redundantly re-read a table getToken() had just read.
    *
    * Now a single PRIMARY-key lookup on tests.id with a filter on person_id
-   * (which is itself indexed via index_fk_booklet_person), no join at all.
+   * (which is itself indexed via the unique (person_id, name) key), no join at all.
    *
    * NOTE: despite the name of the middleware that calls this (IsTestWritable),
    * this deliberately checks OWNERSHIP ONLY -- exactly as before. The previous
@@ -789,13 +789,28 @@ class SessionDAO extends DAO {
     // against 2,338,631 successes while multiplexing correctly, i.e. it had
     // nothing free to hand out because connections were held waiting on queries.
     // Every statement removed shortens that hold.
-    return $this->_(
-      'select tests.laststate from tests where tests.id = :testId and tests.person_id = :personId',
+    //
+    // Read-through cache (CacheService::getOwnedTestRow): at 2,192 calls/s this
+    // SELECT alone held ~650 pooled connections during the 2026-09-23 fresh-
+    // onboarding run. A hit returns the same row shape and only when the cache
+    // agrees this person owns the test; anything else falls through to the query
+    // below, which stays the authority. person_id is selected so the write path
+    // (TestDAO::updateTestState) can keep the cache current.
+    $cached = CacheService::getOwnedTestRow((int) $testId, $personId);
+    if ($cached !== null) {
+      return $cached;
+    }
+    $row = $this->_(
+      'SELECT tests.laststate, tests.person_id FROM tests WHERE tests.id = :testId AND tests.person_id = :personId',
       [
         ':testId' => $testId,
         ':personId' => $personId
       ]
     );
+    if ($row !== null) {
+      CacheService::populateTestState((int) $testId, $personId, $row['laststate']);
+    }
+    return $row;
   }
 
   /**
