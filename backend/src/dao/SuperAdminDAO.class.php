@@ -158,8 +158,10 @@ class SuperAdminDAO extends DAO {
       throw new HttpError("User with name `$userName` already exists!", 409);
     }
 
-    $this->_(
-      'insert into users (name, password, is_superadmin, pw_set_by_admin) values (:user_name, :user_password, :is_superadmin, :pw_set_by_admin)',
+    // `returning` instead of lastInsertId() -- see TestDAO::createTest().
+    $user = $this->_(
+      'insert into users (name, password, is_superadmin, pw_set_by_admin) values (:user_name, :user_password, :is_superadmin, :pw_set_by_admin)
+        returning id',
       [
         ':user_name' => $userName,
         ':user_password' => Password::encrypt($password, $this->passwordSalt, $this->insecurePasswords),
@@ -169,7 +171,7 @@ class SuperAdminDAO extends DAO {
     );
 
     return [
-      'id' => $this->pdoDBhandle->lastInsertId(),
+      'id' => (string) $user['id'],
       'name' => $userName,
       'email' => null,
       'isSuperadmin' => $isSuperadmin ? 1 : 0
@@ -209,13 +211,14 @@ class SuperAdminDAO extends DAO {
       throw new HttpError("Workspace with name `$name` already exists!", 409);
     }
 
-    $this->_(
-      'insert into workspaces (name) values (:ws_name)',
+    // `returning` instead of lastInsertId() -- see TestDAO::createTest().
+    $workspace = $this->_(
+      'insert into workspaces (name) values (:ws_name) returning id',
       [':ws_name' => $name]
     );
 
     return [
-      'id' => $this->pdoDBhandle->lastInsertId(),
+      'id' => (string) $workspace['id'],
       'name' => $name
     ];
   }

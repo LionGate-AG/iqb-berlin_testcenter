@@ -33,8 +33,12 @@ class TestDAO extends DAO {
   // TODO unit test
   public function createTest(int $personId, TestName $testName, string $bookletLabel): TestData {
     $state = (object) [];
-    $this->_(
-      'insert into tests (person_id, name, label, laststate, file_id) values (:person_id, :name, :label, :state, :file_id)',
+    // `returning` instead of lastInsertId(): that is a separate `SELECT lastval()`, which behind a
+    // transaction-pooling PgBouncer can run on another server connection and return another
+    // session's id -- a wrong test id that the test-state cache below would then bind to this person.
+    $row = $this->_(
+      'insert into tests (person_id, name, label, laststate, file_id) values (:person_id, :name, :label, :state, :file_id)
+        returning id',
       [
         ':person_id' => $personId,
         ':name' => $testName->name,
@@ -43,7 +47,7 @@ class TestDAO extends DAO {
         ':file_id' => $testName->bookletFileId
       ]
     );
-    $testId = (int) $this->pdoDBhandle->lastInsertId();
+    $testId = (int) $row['id'];
 
     // Seed the test-state cache so the first PATCH is already a hit. This also
     // overwrites any stale entry at this id: after a TRUNCATE resets

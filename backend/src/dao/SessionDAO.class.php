@@ -473,9 +473,11 @@ class SessionDAO extends DAO {
     $token = Token::generate('person', "{$login->getGroupName()}_{$login->getName()}_$code");
 
     try {
-      $this->_(
+      // `returning` instead of lastInsertId() -- see TestDAO::createTest().
+      $personSession = $this->_(
         "insert into person_sessions (token, code, login_sessions_id, valid_until, name_suffix)
-            values (:token, :code, :login_id, :valid_until, :suffix)",
+            values (:token, :code, :login_id, :valid_until, :suffix)
+            returning id",
         [
           ':token' => $token,
           ':code' => $code,
@@ -510,7 +512,7 @@ class SessionDAO extends DAO {
     return new PersonSession(
       $loginSession,
       new Person(
-        (int) $this->pdoDBhandle->lastInsertId(),
+        (int) $personSession['id'],
         $token,
         $code,
         $suffix,

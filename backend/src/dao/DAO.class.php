@@ -188,9 +188,18 @@ class DAO {
     $this->pdoDBhandle->rollBack();
   }
 
+  /**
+   * Runs an INSERT into a table with an `id` column and returns the new row's id.
+   *
+   * The id comes from `returning id` in the same statement, not from lastInsertId(): that is a
+   * separate `SELECT lastval()`, which behind a transaction-pooling PgBouncer can run on another
+   * server connection and return another session's id (or fail with "lastval is not yet defined").
+   *
+   * @param array<string, mixed> $params
+   */
   public function insert(string $sql, array $params = []): int
   {
-    $this->_($sql, $params);
-    return (int)$this->pdoDBhandle->lastInsertId();
+    $row = $this->_(rtrim(trim($sql), ';') . ' returning id', $params);
+    return (int) $row['id'];
   }
 }
