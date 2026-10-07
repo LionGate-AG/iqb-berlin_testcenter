@@ -16,6 +16,10 @@ export class TestSessionService implements OnModuleInit {
     this.websocketGateway.getDisconnectionObservable().subscribe((disconnected: string) => {
       this.removeMonitor(disconnected).catch(e => this.logger.error(e.message));
     });
+    // Upstream 12ff306ec: a registration whose socket never connected is dropped.
+    this.websocketGateway.getTokenExpiryObservable().subscribe((expired: string) => {
+      this.removeMonitor(expired).catch(e => this.logger.error(e.message));
+    });
   }
 
   private readonly logger = new Logger(TestSessionService.name);
@@ -86,6 +90,8 @@ export class TestSessionService implements OnModuleInit {
       await this.redisService.sadd(KEY.monitorGroups(group), monitor.token);
     }));
     await this.redisService.hset(KEY.monitors, monitor.token, monitor);
+    // Last: a socket may connect as soon as its token is allowed, and must then find the monitor in place.
+    await this.websocketGateway.allowToken(monitor.token);
   }
 
   async removeMonitor(monitorToken: string): Promise<void> {

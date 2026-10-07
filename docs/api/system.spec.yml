@@ -19,6 +19,10 @@ paths:
                 - "[GET] /list/routes"
         "500":
           description: Server Error
+          content:
+            text/html:
+              schema:
+                $ref: './components.spec.yml#/components/schemas/error'
 
   /system/config:
     get:
@@ -28,7 +32,8 @@ paths:
         - customTexts for UI
         - uris of additional services
         - serverTimestamp (in milliseconds)
-        - supported browsers"
+        - supported browsers
+        - supported major versions of the XML schemas"
       tags:
         - api info
         - super admin
@@ -54,6 +59,23 @@ paths:
                     type: number
                   veronaPlayerApiVersionMax:
                     type: number
+                  xmlSchemaVersions:
+                    type: object
+                    description: supported major versions of the XML schema for each file type
+                    additionalProperties:
+                      type: object
+                      properties:
+                        repo:
+                          type: string
+                          description: name of the schema repository, as used in the schema permalink
+                        min:
+                          type: number
+                        max:
+                          type: number
+                      required:
+                        - repo
+                        - min
+                        - max
                   baseUrl:
                     type: string
                     description: base url of the API
@@ -72,6 +94,7 @@ paths:
                   - fileServiceUri
                   - veronaPlayerApiVersionMin
                   - veronaPlayerApiVersionMax
+                  - xmlSchemaVersions
                   - baseUrl
                   - supportedBrowsers
                   - passwordMinLength
@@ -84,12 +107,21 @@ paths:
                 fileServiceUri: http://blabla
                 veronaPlayerApiVersionMin: 2
                 veronaPlayerApiVersionMax: 4
+                xmlSchemaVersions:
+                  Booklet: { repo: testcenter-booklet-xml, min: 18, max: 18 }
+                  Testtakers: { repo: testcenter-testtaker-xml, min: 17, max: 18 }
+                  Unit: { repo: unit-xml, min: 17, max: 17 }
+                  SysCheck: { repo: testcenter-syscheck-xml, min: 18, max: 18 }
                 baseUrl: http://testcenter.de
                 supportedBrowsers: ["chrome 131", "firefox 133"]
                 passwordMinLength: 7
                 passwordPattern: "^\\d+$"
         "500":
           description: Server Error
+          content:
+            text/html:
+              schema:
+                $ref: './components.spec.yml#/components/schemas/error'
 
   /system/config/app:
     patch:
@@ -123,10 +155,22 @@ paths:
           description: successfully updated appConfig
         "401":
           description: Not authenticated
+          content:
+            text/html:
+              schema:
+                $ref: './components.spec.yml#/components/schemas/error'
         "403":
           description: Forbidden
+          content:
+            text/html:
+              schema:
+                $ref: './components.spec.yml#/components/schemas/error'
         "500":
           description: Server Error
+          content:
+            text/html:
+              schema:
+                $ref: './components.spec.yml#/components/schemas/error'
 
   /system/config/custom-texts:
     patch:
@@ -155,10 +199,22 @@ paths:
           description: successfully updated appConfig
         "401":
           description: Not authenticated
+          content:
+            text/html:
+              schema:
+                $ref: './components.spec.yml#/components/schemas/error'
         "403":
           description: Forbidden
+          content:
+            text/html:
+              schema:
+                $ref: './components.spec.yml#/components/schemas/error'
         "500":
           description: Server Error
+          content:
+            text/html:
+              schema:
+                $ref: './components.spec.yml#/components/schemas/error'
 
   /version:
     get:
@@ -192,22 +248,62 @@ paths:
           content:
             application/json:
               schema:
-                $ref: './components.spec.yml#/components/schemas/workspace_list'
+                type: array
+                description: List of Workspaces
+                items:
+                  type: object
+                  properties:
+                    id:
+                      type: integer
+                      example: 1
+                    name:
+                      type: string
+                      example: "example_workspace"
+                    latest_modification_ts:
+                      type: string
+                      nullable: true
+                      description: >-
+                        Time of the latest file modification in the workspace, in the system
+                        timezone, formatted `YYYY-MM-DD HH:MM:SS`, or null if the workspace has no
+                        files. Not RFC 3339: the value carries neither a `T` separator nor an
+                        offset.
+                      example: "2023-01-16 09:00:00"
+                  required:
+                    - id
+                    - name
               example:
-                - id: '1'
+                - id: 1
                   name: "example_workspace"
+                  latest_modification_ts: "2023-01-16 09:00:00"
         "401":
           description: Not authenticated
+          content:
+            text/html:
+              schema:
+                $ref: './components.spec.yml#/components/schemas/error'
         "410":
           description: Session Expired
+          content:
+            text/html:
+              schema:
+                $ref: './components.spec.yml#/components/schemas/error'
         "403":
           description: Forbidden
+          content:
+            text/html:
+              schema:
+                $ref: './components.spec.yml#/components/schemas/error'
         "500":
           description: Server Error
+          content:
+            text/html:
+              schema:
+                $ref: './components.spec.yml#/components/schemas/error'
 
     delete:
       summary: delete some workspaces
-      description: deletes a list of workspaces given by their ids
+      description: deletes a list of workspaces given by their ids.
+       * **requires the password of the performing user for security reasons**
       tags:
         - super admin
       parameters:
@@ -226,20 +322,48 @@ paths:
                   description: list of Workspace-Id
                   items:
                     type: integer
+                p:
+                  type: string
+                  description: "performing user's password"
+                  example: user123
               required:
                 - ws
+                - p
             example:
               ws: [2]
+              p: user123
 
       responses:
+        "200":
+          description: ok
+        "400":
+          description: Password missing
         "401":
           description: Not authenticated
+          content:
+            text/html:
+              schema:
+                $ref: './components.spec.yml#/components/schemas/error'
         "410":
           description: Session Expired
+          content:
+            text/html:
+              schema:
+                $ref: './components.spec.yml#/components/schemas/error'
         "403":
-          description: Forbidden
+          description: |-
+            Forbidden. Either the requesting user is no super-admin, or `p` does
+            not match the requesting user's current password.
+          content:
+            text/html:
+              schema:
+                $ref: './components.spec.yml#/components/schemas/error'
         "500":
           description: Server Error
+          content:
+            text/html:
+              schema:
+                $ref: './components.spec.yml#/components/schemas/error'
 
   /users:
     get:
@@ -267,17 +391,34 @@ paths:
                   isSuperadmin: true
         "401":
           description: Not authenticated
+          content:
+            text/html:
+              schema:
+                $ref: './components.spec.yml#/components/schemas/error'
         "410":
           description: Session Expired
+          content:
+            text/html:
+              schema:
+                $ref: './components.spec.yml#/components/schemas/error'
         "403":
           description: Forbidden
+          content:
+            text/html:
+              schema:
+                $ref: './components.spec.yml#/components/schemas/error'
         "500":
           description: Server Error
+          content:
+            text/html:
+              schema:
+                $ref: './components.spec.yml#/components/schemas/error'
 
     delete:
       summary: delete some users
       description: deletes a list of given user-ids. ids wich did not exist get skipped; in other words there is no
         check if the user exists beforeheand.
+       * **requires the password of the performing user for security reasons**
       tags:
         - super admin
       parameters:
@@ -297,21 +438,46 @@ paths:
                   items:
                     type: string
                     description: user-id
+                p:
+                  type: string
+                  description: "performing user's password"
+                  example: user123
             example:
               u:
                 - 2
+              p: user123
 
       responses:
         "200":
           description: ok
+        "400":
+          description: Password missing
         "401":
           description: Not authenticated
+          content:
+            text/html:
+              schema:
+                $ref: './components.spec.yml#/components/schemas/error'
         "410":
           description: Session Expired
+          content:
+            text/html:
+              schema:
+                $ref: './components.spec.yml#/components/schemas/error'
         "403":
-          description: Forbidden
+          description: |-
+            Forbidden. Either the requesting user is no super-admin, or `p` does
+            not match the requesting user's current password.
+          content:
+            text/html:
+              schema:
+                $ref: './components.spec.yml#/components/schemas/error'
         "500":
           description: Server Error
+          content:
+            text/html:
+              schema:
+                $ref: './components.spec.yml#/components/schemas/error'
 
   /sys-check-mode:
     get:
@@ -360,6 +526,10 @@ paths:
           description: No SysChecks found.
         "500":
           description: Server Error
+          content:
+            text/html:
+              schema:
+                $ref: './components.spec.yml#/components/schemas/error'
 
   /system/time:
     get:
@@ -377,6 +547,10 @@ paths:
                 timestamp: 1618816319707.522
         "500":
           description: Server Error
+          content:
+            text/html:
+              schema:
+                $ref: './components.spec.yml#/components/schemas/error'
 
   /system/status:
     get:
@@ -405,3 +579,7 @@ paths:
                   - cacheService
         "500":
           description: Server Error
+          content:
+            text/html:
+              schema:
+                $ref: './components.spec.yml#/components/schemas/error'

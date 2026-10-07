@@ -30,30 +30,38 @@ class SystemConfig {
   public static int $system_veronaMin;
   public static int $system_iqbStandardResponseMax;
   public static int $system_iqbStandardResponseMin;
+  /** @var array<string, array{repo: string, min: int, max: int}> file type => schema repo and supported major versions */
+  public static array $system_xmlSchemaVersions;
   public static string $system_timezone = 'Europe/Berlin';
   public static bool $debug_useInsecurePasswords = false;
-  public static bool $debug_allowExternalXmlSchema = true;
   public static bool $debug_useStaticTokens = false;
   public static bool $debug_fastLoginReuse = false;
   public static string $debug_useStaticTime = 'now';
+  public static bool $debug_allowTestMode = false;
   public static string $language_dateFormat = 'd/m/Y H:i';
-  public static bool $enable_xmlschema_validation = false; // todo this config is not exposed in .env file; xsd validation can be reactivated at a moments notice
+  public static bool $xmlSchema_validation = true;
   public static string $server_key = 'Secret';
   // TODO server URL
   public static int $password_min_length;
   public static string $password_pattern;
   public static string $admin_init_password;
+  public static bool $login_requirePassword = false;
 
+  /**
+   * @param array<string, array<string, mixed>> $config section name => key => value
+   * @throws Exception if a section and key name no configuration property
+   */
   private static function apply(array $config): void {
     foreach ($config as $sectionName => $section) {
       foreach ($section as $key => $value) {
         $propertyKey = "{$sectionName}_$key";
-        if (property_exists(self::class, $propertyKey)) {
-          if ($propertyKey == 'bruteForceProtection_sessions' && is_string($value)) {
-            $value = array_values(array_filter(explode(' ', trim($value))));
-          }
-          self::$$propertyKey = $value;
+        if (!property_exists(self::class, $propertyKey)) {
+          throw new Exception("Unknown configuration key `[$sectionName] $key`: no property `$propertyKey` exists.");
         }
+        if ($propertyKey == 'bruteForceProtection_sessions' && is_string($value)) {
+          $value = array_values(array_filter(explode(' ', trim($value))));
+        }
+        self::$$propertyKey = $value;
       }
     }
 
@@ -64,6 +72,7 @@ class SystemConfig {
     ) {
       self::applyVersionFromPackageJson();
     }
+    self::applyCompatibilityDefinitions();
     self::verifyClassProperties();
   }
 
@@ -78,16 +87,17 @@ class SystemConfig {
   public static function readEnvironment(): void {
     $config = [];
 
-    $config['database']['name'] = self::stringEnv('MYSQL_DATABASE');
-    $config['database']['host'] = self::stringEnv('MYSQL_HOST');
-    $config['database']['port'] = self::stringEnv('MYSQL_PORT');
-    $config['database']['user'] = self::stringEnv('MYSQL_USER');
-    $config['database']['password'] = self::stringEnv('MYSQL_PASSWORD');
+    $config['database']['name'] = self::stringEnv('DB_DATABASE');
+    $config['database']['host'] = self::stringEnv('DB_HOST');
+    $config['database']['port'] = self::stringEnv('DB_PORT');
+    $config['database']['user'] = self::stringEnv('DB_USER');
+    $config['database']['password'] = self::stringEnv('DB_PASSWORD');
 
     $config['password']['salt'] = self::stringEnv('PASSWORD_SALT');
     $config['password']['min_length'] = (int) self::stringEnv('PASSWORD_MIN_LENGTH');
     $config['password']['pattern'] = self::stringEnv('PASSWORD_PATTERN');
     $config['admin']['init_password'] = self::stringEnv('ADMIN_INIT_PASSWORD');
+    $config['login']['requirePassword'] = self::boolEnv('REQUIRE_LOGIN_PASSWORD');
 
     if (self::boolEnv('BROADCASTER_ENABLED')) {
       $config['broadcaster']['url'] = 'http://broadcaster:3000';
@@ -120,6 +130,11 @@ class SystemConfig {
       $config['storage']['presignTtl'] = self::stringEnv('S3_PRESIGN_TTL', '3600');
     }
 
+    $config['xmlSchema']['validation'] = self::boolEnv('XML_SCHEMA_VALIDATION', true);
+
+    $config['debug']['allowTestMode'] = self::boolEnv('ALLOW_TEST_MODE');
+
+
     $overrideConfig = getenv('OVERRIDE_CONFIG');
     if ($overrideConfig) {
       $overrideConfig = parse_ini_string($overrideConfig, true, INI_SCANNER_TYPED);
@@ -141,25 +156,28 @@ class SystemConfig {
     self::$system_version = $packageJson->version;
   }
 
-  private static function boolEnv(string $name): bool {
-    return in_array(strtolower(getEnv($name)), ['on', 'true', 'yes', 1]);
+  private static function applyCompatibilityDefinitions(): void {
+    $compatibilityStr = file_get_contents(ROOT_DIR . '/definitions/compatibility.json');
+    $compatibility = JSON::decode($compatibilityStr, true);
+    self::$system_xmlSchemaVersions = $compatibility['xml-schema-versions'];
   }
 
-  private static function stringEnv(string $name): string {
+  private static function boolEnv(string $name, bool $default = false): bool {
     $value = getEnv($name);
+    if ($value === false or $value === '') {
+      return $default;
+    }
+    return in_array(strtolower($value), ['on', 'true', 'yes', 1]);
+  }
+
+  private static function stringEnv(string $name, ?string $default = null): string {
+    $value = getEnv($name);
+    if (($default !== null) and (($value === false) or ($value === ''))) {
+      return $default;
+    }
     if (!isset($value)) {
         throw new Exception("Environment-variable missing: `$name`.");
     }
     return $value;
-  }
-
-  public static function dumpDbConfig(): string {
-    return print_r([
-      "host" => self::$database_host,
-      "user" => self::$database_user,
-      "port" => self::$database_port,
-      "pass" => substr(self::$database_password, 0, 2) . '***',
-      "name" => self::$database_name
-    ], true);
   }
 }

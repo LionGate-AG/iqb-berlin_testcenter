@@ -12,9 +12,11 @@ declare(strict_types=1);
  * LogBuffer for the measurements behind that and for the at-most-once semantics
  * this accepts.
  *
- * This session runs with foreign_key_checks=0 (see the connect block below); the
- * FK was measured to be the dominant cost of a batch insert and the source of a
- * lock convoy against `UPDATE tests`.
+* The FK test_logs.booklet_id -> tests.id is validated normally. On MySQL its per-row shared lock
+ * was the dominant cost of a batch and convoyed with `UPDATE tests`, so the MySQL version skipped
+ * the check for this session. PostgreSQL's FK check takes FOR KEY SHARE, which does not conflict
+ * with the FOR NO KEY UPDATE of `UPDATE tests SET laststate`, so that reason no longer applies.
+ * Re-measure under load before reintroducing anything like it..
  *
  * # Deliberately runs regardless of TESTCENTER_ASYNC_TEST_LOGS
  *
@@ -34,7 +36,7 @@ declare(strict_types=1);
  *   LOG_DRAIN_BATCH      rows per INSERT                    (default 5000)
  *   LOG_DRAIN_IDLE_MS    sleep when the queue is empty      (default 200)
  *   LOG_DRAIN_REPORT_SEC seconds between stats log lines    (default 30)
- * plus the same MYSQL_* / REDIS_* variables the backend receives.
+ * plus the same DB_* / REDIS_* variables the backend receives.
  */
 
 if (php_sapi_name() !== 'cli') {
@@ -80,47 +82,8 @@ while (true) {
       DB::connect();
       $testDAO = new TestDAO();
 
-      // Skip foreign-key validation FOR THIS SESSION ONLY.
-      //
-      // test_logs.booklet_id references tests.id (fk_log_booklet). Validating it
-      // costs an index lookup AND a shared lock on the referenced `tests` row --
-      // per row. In a 1,000-row batch that is 1,000 lookups and 1,000 S-locks held
-      // until the transaction commits, which measured on 2026-09-03 as:
-      //
-      //   * batch INSERT avg 853ms for 1,000 rows = 0.85ms/row, against a measured
-      //     uncontended floor of 0.05ms/row -- 17x the floor, nearly all of it FK work;
-      //   * a lock convoy: `UPDATE tests SET laststate` needs an X-lock on those same
-      //     rows and blocked behind the batch. Caught directly in data_lock_waits with
-      //     up to 12 concurrent waiters against a batch holding 991 row locks
-      //     (Innodb_row_lock_waits 11,301, avg 210ms, max 8,760ms).
-      //
-      // Together those capped drain throughput at ~1,200 rows/s, below the arrival
-      // rate, so the queue climbed to its 250,000 cap in ~5 minutes. Past the cap
-      // LogBuffer::push() returns false and callers revert to synchronous inserts --
-      // 65,704 of them -- which put Threads_running from 74 to 1,468, exhausted the
-      // ProxySQL pool ("Max connect timeout reached ... after 10089ms"), and produced
-      // 51,828 shed 503s. Every failure in that run traced back to this FK cost.
-      //
-      // WHY SESSION-SCOPED RATHER THAN DROPPING THE CONSTRAINT: fk_log_booklet is
-      // `ON DELETE CASCADE`, and AdminDAO::deleteResultData() /
-      // deleteResultDataByPersonAndBooklet() (WorkspaceController, admin "delete
-      // result data") rely on that cascade to remove a test's log rows. test_logs has
-      // no PRIMARY KEY and only index_fk_log_booklet, so orphans left behind would be
-      // awkward to sweep -- and this is test-taker data with a deletion feature, so
-      // silently breaking the cascade is not acceptable. Disabling validation per
-      // session keeps the constraint, and therefore keeps the cascade, while removing
-      // its cost from the one writer that cannot afford it. The request path continues
-      // to validate normally.
-      //
-      // WHAT THIS GIVES UP: rows whose parent test was deleted between the request and
-      // the drain will now insert as orphans instead of being rejected. The window is
-      // seconds, and AdminDAO::getLogReportData() inner-joins tests, so orphans are
-      // invisible in the report rather than harmful. The row-by-row fallback below is
-      // retained for every other error class.
-      $testDAO->_('set session foreign_key_checks = 0');
-
       $dbBackoff = 0;
-      drainLog('database connected (foreign_key_checks=0 for this session)');
+      drainLog('database connected');
     } catch (Throwable $throwable) {
       $dbBackoff = min(30, $dbBackoff === 0 ? 1 : $dbBackoff * 2);
       drainLog('database unavailable (' . $throwable->getMessage() . '), retrying in ' . $dbBackoff . 's');
@@ -158,11 +121,9 @@ while (true) {
     $inserted += count($logs);
     $batches++;
   } catch (Throwable $throwable) {
-    // A whole batch failed. Foreign-key violations -- previously the expected
-    // cause, since this database is reseeded between runs -- can no longer occur
-    // here: this session sets foreign_key_checks=0, so a row whose parent test was
-    // deleted inserts as an orphan rather than failing. What remains are packet or
-    // parameter limits, a lost connection mid-statement, and genuine data errors.
+    // A whole batch failed. Typical causes: a foreign-key violation (the parent test
+    // was deleted between the request and the drain), parameter limits, a lost
+    // connection mid-statement, or genuine data errors.
     //
     // Retrying the whole batch could loop forever on the same bad row, so fall back
     // to row-by-row and discard only the offenders; everything still-valid in the

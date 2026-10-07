@@ -10,6 +10,11 @@ export const KEY = {
   testSessions: (group: string): string => `testSessions:${group}`, // HASH testId -> TestSessionChange JSON
   activeGroups: 'activeGroups', // SET of group names with session state
   clientAlive: (token: string): string => `client-alive:${token}`, // STRING "1" EX
+  // ZSET token -> registration time (ms). A token the backend registered (testee or monitor) that has
+  // not been used by a WebSocket yet. Taken (ZREM) on connect; expired by the heartbeat after
+  // TOKEN_CONNECT_TIMEOUT (see WebsocketGateway.verifyRegistration / expireUnconnectedTokens).
+  wsRegistrations: 'ws-registrations',
+
   // SET of connected tokens (ops/debug only; nothing in the app reads it).
   // Was a LIST under the key `websocket-connections`, which made removal an O(N)
   // `LREM` over every connected token -- at ~30k concurrent clients that measured

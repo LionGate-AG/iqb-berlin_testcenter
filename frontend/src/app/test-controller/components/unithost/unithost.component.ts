@@ -1,11 +1,8 @@
-import {
-  BehaviorSubject, combineLatest, merge, Subscription
-} from 'rxjs';
+import { merge, Subscription } from 'rxjs';
 import {
   Component, OnInit, OnDestroy, ViewChild, ElementRef, Inject
 } from '@angular/core';
 import { AsyncPipe, NgIf } from '@angular/common';
-import { MatProgressBar } from '@angular/material/progress-bar';
 import { MatCardModule } from '@angular/material/card';
 import { FormsModule } from '@angular/forms';
 import { ActivatedRoute, Params } from '@angular/router';
@@ -15,12 +12,9 @@ import { CustomtextPipe, MainDataService } from '@shared/shared.module';
 import { AppError, AuthData, CodeInputType } from '@app/app.interfaces';
 import { ThemeService } from '@shared/services/theme.service';
 import { CodeInputComponent } from '@shared/components/code-input/code-input.component';
-import { AssetService } from '@shared/services/asset.service';
 import { TestControllerService } from '../../services/test-controller.service';
 import { BackendService } from '../../services/backend.service';
-import {
-  Testlet, LoadingProgress, isUnit, NavigationState, isEqualNavigation
-} from '../../interfaces/test-controller.interfaces';
+import { NavigationState, isEqualNavigation } from '../../interfaces/test-controller.interfaces';
 import {
   isVeronaNavigationTarget, SharedParameter,
   VeronaNavigationDeniedReason,
@@ -33,12 +27,12 @@ import {
 } from '../../interfaces/verona.interfaces';
 import { PageService } from '../../services/page.service';
 import { VeronaAPIService } from '../../services/verona-api.service';
+import { MessageService } from '@app/shared/services/message.service';
 
 @Component({
   templateUrl: './unithost.component.html',
   imports: [
     AsyncPipe,
-    MatProgressBar,
     MatCardModule,
     CustomtextPipe,
     FormsModule,
@@ -52,23 +46,20 @@ export class UnithostComponent implements OnInit, OnDestroy {
   @ViewChild('iframeHost') private iFrameHostElement!: ElementRef;
   private iFrameItemplayer: HTMLIFrameElement | null = null;
   private subscriptions: { [tag: string ]: Subscription } = {};
-  resourcesLoading$: BehaviorSubject<LoadingProgress[]> = new BehaviorSubject<LoadingProgress[]>([]);
-  resourcesToLoadLabels: string[] = [];
   clearCode: string = '';
 
   codeInputMode: CodeInputType = 'text-field';
   codeInputLength: number | undefined; // only used for keypad input
   codeInputErrorText: string = '';
-  protected loadingProgressImgSrc?: string;
 
   constructor(public tcs: TestControllerService, private mds: MainDataService, private pageService: PageService,
               private apiService: VeronaAPIService,
               @Inject('FILE_SERVER_URL') private readonly fileServerUrl: string,
-              public themeService: ThemeService, public assetService: AssetService,
+              public themeService: ThemeService,
+              private messageService: MessageService,
               private bs: BackendService, private route: ActivatedRoute) { }
 
   ngOnInit(): void {
-    this.loadingProgressImgSrc = this.assetService.getAssetSrc('loadingProgress');
     this.iFrameItemplayer = null;
     setTimeout(() => {
       this.subscriptions.postMessage = this.mds.postMessage$
@@ -131,7 +122,14 @@ export class UnithostComponent implements OnInit, OnDestroy {
   }
 
   private async handleReadyNotification(msgData: any): Promise<void> {
-    const playerApiVersion = msgData.apiVersion || msgData.metadata.specVersion;
+    const playerApiVersion = msgData.apiVersion || msgData.metadata?.specVersion;
+    if (typeof playerApiVersion !== 'string') {
+      throw new AppError({
+        description: 'Player did not report its Verona version (apiVersion or metadata.specVersion)',
+        label: 'Unbekannte Verona-Version',
+        type: 'verona_player_runtime_error'
+      });
+    }
     const playerApiVersionMajor = parseInt(playerApiVersion.split('.').shift() ?? '', 10);
 
     if (
@@ -306,51 +304,42 @@ export class UnithostComponent implements OnInit, OnDestroy {
       this.subscriptions.loading.unsubscribe();
     }
 
-    let unitsToLoadIds: number[] = [];
-    const addChildren = (testlet: Testlet) => {
-      testlet.children.forEach(child => {
-        if (isUnit(child)) {
-          unitsToLoadIds.push(child.sequenceId);
-        } else {
-          addChildren(child);
-        }
-      });
-    };
-    if (this.tcs.currentUnit.parent) {
-      addChildren(this.tcs.currentUnit.parent);
-    } else {
-      unitsToLoadIds = [this.tcs.currentUnitSequenceId];
-    }
-
-    const resourcesToLoad = unitsToLoadIds
-      .flatMap(sequenceId => Object.values(this.tcs.getUnit(sequenceId).loadingProgress));
-
-    this.resourcesToLoadLabels = unitsToLoadIds
-      .flatMap(sequenceId => Object.keys(this.tcs.getUnit(sequenceId).loadingProgress)
-        .map(key => `${this.tcs.getUnit(sequenceId).label} (${key})`)
-      );
-
-    this.subscriptions.loading = combineLatest<LoadingProgress[]>(resourcesToLoad)
+    // For the very first unit of a test, TestLoaderService.resumeTest() already waited for
+    // the block/testlet to be loaded before ever
+    // navigating here, so this resolves immediately in that case. It's still needed here for
+    // later, still-lazy-loading blocks reached during the test, where nothing waited beforehand.
+    //
+    // Only tell TestControllerComponent this unit isn't ready yet if the wait turns out to be
+    // real - i.e. only once we know subscribing didn't resolve it on the spot. subscribe() always
+    // calls back synchronously for an already-settled source, so `settledSynchronously` is set
+    // before this .subscribe() call itself returns.
+    let settledSynchronously = false;
+    this.subscriptions.loading = this.tcs.unitBlockResourcesLoaded$(unitSequenceId)
       .subscribe({
-        next: value => {
-          this.resourcesLoading$.next(value);
-        },
         error: err => {
+          settledSynchronously = true;
           this.mds.appError = new AppError({
             label: `Unit konnte nicht geladen werden. ${err.info}`,
             description: (err.info) ? err.info : err,
             type: 'network'
           });
         },
-        complete: () => this.prepareUnit()
+        complete: () => {
+          settledSynchronously = true;
+          this.prepareUnit();
+        }
       });
+    if (!settledSynchronously) {
+      this.tcs.unitContentReady$.next(false);
+    }
   }
 
   private prepareUnit(): void {
     if (!this.tcs.currentUnit) {
       throw new Error('Unit not loaded');
     }
-    this.resourcesLoading$.next([]);
+    // This unit's resources finished loading (see open()'s combineLatest above) - reveal it.
+    this.tcs.unitContentReady$.next(true);
 
     this.tcs.addToTestStateBuffer('CURRENT_UNIT_ID', this.tcs.currentUnit.alias);
     this.tcs.AddToUnitStateBuffer(
@@ -362,8 +351,15 @@ export class UnithostComponent implements OnInit, OnDestroy {
 
   private runUnit(): void {
     if (this.tcs.currentUnit && this.tcs.currentUnit.parent.locked) {
-      if (this.tcs.testMode.presetCode) {
-        this.clearCode = this.tcs.currentUnit.parent.locked?.through.restrictions.codeToEnter?.code || '';
+      if (this.tcs.testMode.showCode) {
+        this.messageService.showSnackbar(
+          [
+            'Das Freigabewort lautet ',
+            { emphasized: this.tcs.currentUnit.parent.locked?.through.restrictions.codeToEnter?.code ?? '' }
+          ],
+          'Schließen',
+          0
+        );
       }
       return;
     }
@@ -479,6 +475,6 @@ export class UnithostComponent implements OnInit, OnDestroy {
     }
     const requiredCode =
       (this.tcs.currentUnit.parent.locked.through.restrictions.codeToEnter.code);
-    return requiredCode === code;
+    return requiredCode.toLowerCase() === code.toLowerCase();
   }
 }

@@ -6,14 +6,14 @@ import {
   openWorkspace,
   probeBackendApi,
   reload,
-  resetBackendData,
+  resetBackendTestData,
   visitLoginPage
 } from '../utils';
 
 describe('Workspace-Admin-files', () => {
   before(() => {
     deleteDownloadsFolder();
-    resetBackendData();
+    resetBackendTestData();
     probeBackendApi();
   });
 
@@ -328,7 +328,9 @@ describe('Workspace-Admin-files', () => {
     cy.get('[data-cy="upload-file-select"]')
       .selectFile(`${Cypress.config('fixturesFolder')}/Booklet_sameUnitIDs.xml`, { force: true });
     cy.contains('Abgelehnt');
-    cy.contains('Unit');
+    cy.contains('unitId');
+    cy.get('[data-cy="close-upload-report"]')
+      .click();
     cy.get('[data-cy="Booklet_sameUnitIDs.xml"]')
       .should('not.exist');
   });
@@ -351,7 +353,7 @@ describe('Workspace-Admin-files', () => {
     cy.get('[data-cy="dialog-confirm"]')
       .contains('Löschen')
       .click();
-    cy.contains('erfolgreich gelöscht.');
+    cy.contains('Dateien erfolgreich gelöscht.');
     cy.get('[data-cy="upload-file-select"]')
       .selectFile('../sampledata/Booklet.xml', { force: true });
     cy.contains('Erfolgreich hochgeladen');

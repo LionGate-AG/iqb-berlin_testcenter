@@ -29,16 +29,24 @@ export class WebsocketGateway implements
   // for as long as the sweep takes. Observed: ~430 clients processed in ~430ms with the
   // old per-client log line; chunking bounds this regardless of burst size.
   private static readonly HEARTBEAT_BATCH_SIZE = 500;
+  // A registration whose WebSocket has not connected within this time is dropped (upstream's value).
+  private static readonly TOKEN_CONNECT_TIMEOUT = 30000;
+  // Upper bound of expired registrations one pod handles per heartbeat tick, so a backlog cannot stall
+  // the sweep; the rest is picked up on the next tick or by another pod.
+  private static readonly TOKEN_EXPIRY_BATCH_SIZE = 1000;
 
   @WebSocketServer()
   private server!: Server; // magically injected
 
   // LOCAL only: the sockets this pod personally terminates. Never shared across pods.
+  // (Which tokens may connect is shared state, not local: see verifyRegistration().)
   private clients = new Map<string, WebSocket>();
   // Tracks which local sockets answered the last ping (avoids stashing flags on the ws object).
   private aliveClients = new WeakSet<WebSocket>();
+
   private clientsCount$: BehaviorSubject<number> = new BehaviorSubject<number>(0);
   private clientLost$: Subject<string> = new Subject<string>();
+  private tokenExpired$: Subject<string> = new Subject<string>();
   private heartbeatInterval: NodeJS.Timeout | null = null;
   // Guards against a second sweep starting while a very large one is still running.
   private heartbeatSweepRunning = false;
@@ -135,6 +143,33 @@ export class WebsocketGateway implements
     if (staleCount > 0) {
       this.logger.warn(`Heartbeat: terminated ${staleCount} inactive client(s).`);
     }
+
+    await this.expireUnconnectedTokens();
+  }
+
+  /**
+   * Upstream 12ff306ec: a registration whose WebSocket never connects (e.g. a proxy blocking WebSockets)
+   * was kept forever -- here it leaked into the `testees`/`monitors` hashes. Every pod runs this on its
+   * heartbeat. Registrations live in Redis, and only the pod whose ZREM removes an entry handles it, so
+   * each expiry fires exactly once cluster-wide.
+   */
+  private async expireUnconnectedTokens(): Promise<void> {
+    const candidates = await this.redisService.getTokenRegistrationsBefore(
+      Date.now() - WebsocketGateway.TOKEN_CONNECT_TIMEOUT,
+      WebsocketGateway.TOKEN_EXPIRY_BATCH_SIZE
+    );
+    if (candidates.length === 0) {
+      return;
+    }
+
+    const { alive, dead } = await this.redisService.partitionByAlive(candidates);
+    // Registered again while its socket is connected (e.g. a command poll): nothing to expire, the spare
+    // registration is simply dropped.
+    await Promise.all(alive.map(token => this.redisService.takeTokenRegistration(token)));
+    const taken = await Promise.all(dead.map(token => this.redisService.takeTokenRegistration(token)));
+    dead
+      .filter((token, i) => taken[i])
+      .forEach(token => this.tokenExpired$.next(token));
   }
 
   handleConnection(client: WebSocket, message: IncomingMessage): void {
@@ -153,6 +188,15 @@ export class WebsocketGateway implements
       return;
     }
 
+    // Upstream 30f7048a1: reusing a token must not open a second socket. The Map would silently replace
+    // the first one, which then no longer counts against MAX_CONNECTIONS -- a per-pod limit, so this
+    // check is per pod as well. Cross-pod duplicates of a fresh token fail verifyRegistration().
+    if (this.clients.has(token)) {
+      this.logger.warn(`Connection rejected, token already connected: ${token}`);
+      client.close(1008, 'Invalid token');
+      return;
+    }
+
     this.aliveClients.add(client);
     client.on('pong', () => {
       this.aliveClients.add(client);
@@ -160,9 +204,45 @@ export class WebsocketGateway implements
 
     this.clients.set(token, client);
     this.clientsCount$.next(this.clients.size);
-    this.redisService.setClientAlive(token).catch(() => {});
-    this.redisService.pushConnection(token).catch(() => {});
     this.logger.log(`client connected: ${token}`);
+
+    this.verifyRegistration(token, client);
+  }
+
+  /**
+   * Upstream 30f7048a1: only tokens the backend registered may connect. Registration arrives over HTTP
+   * and usually lands on another pod than the WebSocket, so it lives in Redis, and checking it is a
+   * round trip. To keep handleConnection() synchronous, the socket is admitted locally first and checked
+   * here; it is announced cluster-wide (liveness marker, connection set) only once the check succeeded,
+   * and nothing is sent to it before, since nothing is ever addressed to an unregistered token.
+   *
+   * Taking the registration is atomic (ZREM), so of two sockets connecting with one fresh token -- even
+   * on two pods -- exactly one is admitted. After a disconnect the testee/monitor is removed, so a
+   * reconnect needs a new registration, as upstream.
+   */
+  private verifyRegistration(token: string, client: WebSocket): void {
+    this.redisService.takeTokenRegistration(token)
+      .catch((e: Error) => {
+        this.logger.error(`Could not check the registration of ${token}: ${e.message}`);
+        return false;
+      })
+      .then(registered => {
+        if (this.clients.get(token) !== client) {
+          return; // closed or disconnected while the check ran
+        }
+        if (!registered) {
+          this.logger.warn(`Connection rejected, token not registered: ${token}`);
+          // Removed before close(), so the resulting handleDisconnect() finds nothing and reports no loss.
+          // Local clean-up only: nothing was announced in Redis for this socket.
+          this.clients.delete(token);
+          this.aliveClients.delete(client);
+          this.clientsCount$.next(this.clients.size);
+          client.close(1008, 'Invalid token');
+          return;
+        }
+        this.redisService.setClientAlive(token).catch(() => {});
+        this.redisService.pushConnection(token).catch(() => {});
+      });
   }
 
   static getTokenFromUrl(url: string): string {
@@ -216,9 +296,22 @@ export class WebsocketGateway implements
     return tokens.filter(token => this.clients.has(token));
   }
 
-  /** Close a socket if this pod holds it. Idempotent and a no-op for tokens on other pods. */
+  /**
+   * Register a token the backend handed out (TesteeService.addTestee, TestSessionService.addMonitor), so
+   * that a WebSocket may connect with it -- on any pod. See verifyRegistration().
+   */
+  async allowToken(token: string): Promise<void> {
+    await this.redisService.registerToken(token);
+  }
+
+  /**
+   * Close a socket if this pod holds it. Idempotent and a no-op for tokens on other pods. Like upstream,
+   * it also withdraws a registration the token has not used yet.
+   */
   disconnectClient(token: string): void {
+    this.redisService.takeTokenRegistration(token).catch(() => {});
     const client = this.clients.get(token);
+
     if (client) {
       this.logger.log(`disconnect client: ${token}`);
       client.close();
@@ -234,6 +327,10 @@ export class WebsocketGateway implements
 
   getDisconnectionObservable(): Observable<string> {
     return this.clientLost$.asObservable();
+  }
+
+  getTokenExpiryObservable(): Observable<string> {
+    return this.tokenExpired$.asObservable();
   }
 
   getClientTokens(): string[] {

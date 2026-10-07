@@ -2,6 +2,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { HttpService } from '@nestjs/axios';
 import { of, throwError } from 'rxjs';
+
 import { WebSocket } from 'ws';
 import { IncomingMessage } from 'http';
 import { Testee } from './testee.interface';
@@ -24,8 +25,10 @@ const makeWs = (): WebSocket => ({
   send: jest.fn(), close: jest.fn(), on: jest.fn(), terminate: jest.fn(), readyState: 1
 } as unknown as WebSocket);
 
-const connect = (token: string): void => {
+// Connects a socket on this pod and lets its registration check (one Redis round trip) finish.
+const connect = async (token: string): Promise<void> => {
   websocketGateway.handleConnection(makeWs(), { url: `x/ws?token=${token}` } as IncomingMessage);
+  await new Promise(resolve => { setImmediate(resolve); });
 };
 
 const build = async (): Promise<void> => {
@@ -51,9 +54,13 @@ describe('testeeService add and remove', () => {
   });
 
   it('should add a testee (registration written to Redis)', async () => {
+    const spyAllowToken = jest.spyOn(websocketGateway, 'allowToken');
     await testeeService.addTestee(mockTestee);
     expect(await redis.hget<Testee>(KEY.testees, 'testeeToken')).toStrictEqual(mockTestee);
     expect(await redis.smembers(KEY.testeeTestId(5))).toContain('testeeToken');
+    expect(spyAllowToken).toHaveBeenCalledWith('testeeToken');
+    expect(redis.registrations.has('testeeToken')).toBe(true);
+
   });
 
   it('should remove a testee', async () => {
@@ -66,6 +73,19 @@ describe('testeeService add and remove', () => {
     expect(await redis.smembers(KEY.testeeTestId(5))).toStrictEqual([]);
     expect(spyDisconnectClient).toHaveBeenCalledWith('testeeToken');
   });
+
+  it('should remove a testee whose token expired without notifying the backend', async () => {
+    const spyNotifyDisconnection = jest.spyOn(testeeService, 'notifyDisconnection');
+
+    await testeeService.addTestee(mockTestee);
+    websocketGateway['tokenExpired$'].next(mockTestee.token);
+    await new Promise(resolve => { setImmediate(resolve); });
+
+    expect(await redis.hget(KEY.testees, 'testeeToken')).toBeNull();
+    expect(await redis.smembers(KEY.testeeTestId(5))).toStrictEqual([]);
+    expect(spyNotifyDisconnection).not.toHaveBeenCalled();
+  });
+
 });
 
 describe('testeeService', () => {
@@ -87,7 +107,7 @@ describe('testeeService', () => {
   });
 
   it('should broadcast commands to the addressed testees', async () => {
-    connect(mockTestee.token); // alive + local
+    await connect(mockTestee.token); // alive + local
     const ws = (websocketGateway['clients'] as Map<string, WebSocket>).get(mockTestee.token)!;
     const spySend = jest.spyOn(ws, 'send');
 
@@ -117,5 +137,36 @@ describe('testeeService', () => {
     await testeeService.notifyDisconnection(mockTestee.token);
     expect(mockHttp.post).toHaveBeenCalledTimes(3); // NOTIFY_MAX_RETRIES
     expect(spyWarn).toHaveBeenCalled();
+  });
+
+  it('should not notify the backend while the test is connected with another token', async () => {
+    const reconnected : Testee = { ...mockTestee, token: 'reconnectedToken' };
+    await testeeService.addTestee(reconnected);
+    await connect(reconnected.token);
+    mockHttp.post.mockClear();
+
+    await testeeService.notifyDisconnection(mockTestee.token);
+
+    expect(mockHttp.post).not.toHaveBeenCalled();
+  });
+
+  it('should not notify the backend while the test is connected with another token on another pod', async () => {
+    await testeeService.addTestee({ ...mockTestee, token: 'otherPodToken' });
+    await redis.setClientAlive('otherPodToken'); // what the other pod's heartbeat keeps refreshed
+    mockHttp.post.mockClear();
+
+    await testeeService.notifyDisconnection(mockTestee.token);
+
+    expect(mockHttp.post).not.toHaveBeenCalled();
+  });
+
+  it('should notify the backend if another token of the test is registered but not connected', async () => {
+    await testeeService.addTestee({ ...mockTestee, token: 'pendingToken' });
+    mockHttp.post.mockClear();
+
+    await testeeService.notifyDisconnection(mockTestee.token);
+
+    expect(mockHttp.post).toHaveBeenCalled();
+
   });
 });

@@ -17,9 +17,9 @@ class ReviewController extends Controller {
 
     $reviewData = self::reviewDAO()->getReviewsByPerson($personId);
 
-    $acceptHeader = $request->getHeaderLine('Accept');
-    if (str_contains($acceptHeader, 'application/json')) {
-      // Return as JSON
+    $reportFormat = ReportFormat::fromAcceptHeader($request->getHeaderLine('Accept'), ReportFormat::CSV);
+
+    if ($reportFormat === ReportFormat::JSON) {
       $transformedData = ReviewCSVFormatter::transformReviewData($reviewData, true, ReportFormat::JSON);
       $transformedData = ReviewCSVFormatter::enrichWithLabels($transformedData, $workspaceId);
       return $response->withJson($transformedData);
@@ -28,15 +28,14 @@ class ReviewController extends Controller {
     // Return as CSV (default)
     $transformedData = ReviewCSVFormatter::transformReviewData($reviewData, true, ReportFormat::CSV);
     $transformedData = ReviewCSVFormatter::enrichWithLabels($transformedData, $workspaceId);
-    $csv = ReviewCSVFormatter::generateCsvReportData($transformedData);
 
-    if ($csv === Report::BOM) {
+    if ($transformedData === []) {
       return $response->withStatus(204);
     }
 
     return $response
       ->withHeader('Content-Type', 'text/csv;charset=UTF-8')
-      ->write($csv);
+      ->write(ReviewCSVFormatter::generateCsvReportData($transformedData));
   }
 
 }

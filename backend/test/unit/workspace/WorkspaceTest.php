@@ -262,8 +262,7 @@ class WorkspaceTest extends TestCase {
       ->expects('storeFile')
       ->twice();
     $this->workspaceDaoMock
-      ->expects('storeRelations')
-      ->andReturn([[], []]);
+      ->expects('storeRelations');
     $this->workspaceDaoMock
       ->expects('getDependentFilesByTypes')
       ->twice();
@@ -356,8 +355,7 @@ class WorkspaceTest extends TestCase {
     $this->workspaceDaoMock
       ->expects('storeFile');
     $this->workspaceDaoMock
-      ->expects('storeRelations')
-      ->andReturn([[], []]);
+      ->expects('storeRelations');
     $this->workspaceDaoMock
       ->expects('getDependentFilesByTypes');
     $this->workspaceDaoMock
@@ -404,7 +402,6 @@ class WorkspaceTest extends TestCase {
       ->times(4);
     $this->workspaceDaoMock
       ->expects('storeRelations')
-      ->andReturn([[], []])
       ->times(3);
     $this->workspaceDaoMock
       ->expects('getFileById')
@@ -540,7 +537,6 @@ class WorkspaceTest extends TestCase {
       ->times(4);
     $this->workspaceDaoMock
       ->expects('storeRelations')
-      ->andReturn([[], []])
       ->times(3);
     $this->workspaceDaoMock
       ->expects('getFileById')
@@ -662,7 +658,6 @@ class WorkspaceTest extends TestCase {
       ->twice();
     $this->workspaceDaoMock
       ->shouldReceive('storeRelations')
-      ->andReturn([[], []])
       ->once();
     $this->workspaceDaoMock
       ->expects('getDependentFilesByTypes')
@@ -744,7 +739,6 @@ class WorkspaceTest extends TestCase {
       ->times(4);
     $this->workspaceDaoMock
       ->shouldReceive('storeRelations')
-      ->andReturn([[], []])
       ->times(3);
     $this->workspaceDaoMock
       ->expects('getFileById')
@@ -837,7 +831,6 @@ class WorkspaceTest extends TestCase {
       ->once();
     $this->workspaceDaoMock
       ->expects('storeRelations')
-      ->andReturn([[], []])
       ->once();
     $this->workspaceDaoMock
       ->expects('getDependentFilesByTypes')
@@ -926,4 +919,42 @@ class WorkspaceTest extends TestCase {
     $this->expectException("HttpError");
     $workspace->getFileById('SysCheck', 'SYSCHECK.SAMPLE');
   }
+
+  function test_getFileKey(): void {
+    $workspace = new Workspace(1);
+
+    $this->assertSame('ws_1/Resource/player.html', $workspace->getFileKey('Resource', 'player.html'));
+    $this->assertSame('ws_1/Testtakers/SAMPLE_TESTTAKERS.XML', $workspace->getFileKey('Testtakers', 'SAMPLE_TESTTAKERS.XML'));
+    $this->assertSame('ws_1/Resource/sub/player.html', $workspace->getFileKey('Resource', 'sub/player.html'));
+  }
+
+  function test_getFileKey_rejectsUnknownType(): void {
+    $workspace = new Workspace(1);
+
+    $this->assertNull($workspace->getFileKey('Unknown', 'player.html'));
+    $this->assertNull($workspace->getFileKey('', 'player.html'));
+    $this->assertNull($workspace->getFileKey('../ws_2', 'player.html'));
+  }
+
+  function test_getFileKey_rejectsNamesThatCouldLeaveTheirFolder(): void {
+    $workspace = new Workspace(1);
+
+    $names = [
+      '../Testtakers/SAMPLE_TESTTAKERS.XML', // the group-token case: Resource/../Testtakers/...
+      'sub/../../ws_2/Resource/player.html',
+      '..',
+      '.',
+      './player.html',
+      'sub//player.html',
+      'player.html/',
+      '',
+      '/etc/passwd',
+      'sub\\..\\player.html',
+      "player.html\0.png"
+    ];
+    foreach ($names as $name) {
+      $this->assertNull($workspace->getFileKey('Resource', $name), 'must be rejected: ' . json_encode($name));
+    }
+  }
+
 }

@@ -128,7 +128,7 @@ class TestDAO extends DAO {
     ?string $reviewer = null,
   ): void {
     $this->_(
-      'insert ignore into units (name, test_id, original_unit_id) values(:u, :t, :o)',
+      'insert into units (name, test_id, original_unit_id) values(:u, :t, :o) on conflict do nothing',
       [
         ':u' => $unitName,
         ':t' => $testId,
@@ -180,8 +180,8 @@ class TestDAO extends DAO {
             unit_reviews.reviewer,
             unit_reviews.page,
             unit_reviews.pagelabel,
-            unit_reviews.user_agent as userAgent,
-            units.original_unit_id as originalUnitId
+            unit_reviews.user_agent as "userAgent",
+            units.original_unit_id as "originalUnitId"
           from unit_reviews
           left join units on units.test_id = unit_reviews.test_id
               and units.name = unit_reviews.unit_name
@@ -209,7 +209,7 @@ class TestDAO extends DAO {
           categories,
           entry,
           reviewer,
-          user_agent as userAgent
+          user_agent as "userAgent"
         from test_reviews
         where booklet_id = :test_id
           and person_id = :person_id
@@ -361,7 +361,7 @@ class TestDAO extends DAO {
         person_sessions.code,
         person_sessions.token as person_token,
         tests.person_id, 
-        tests.laststate as testState,
+        tests.laststate as "testState",
         tests.id,
         tests.locked,
         tests.running,
@@ -474,14 +474,15 @@ class TestDAO extends DAO {
     $params = [':timestamp' => TimeStamp::toSQLFormat(TimeStamp::now())];
     $index = 0;
     foreach ($laststates as $testId => $laststate) {
-      $rows[] = 'ROW(' . (int) $testId . ", :s$index)";
+      $rows[] = '(' . (int) $testId . ", :s$index)";
       $params[":s$index"] = $laststate;
       $index++;
     }
     $this->_(
-      'WITH pending (id, laststate) AS (VALUES ' . implode(', ', $rows) . ')
-      UPDATE tests INNER JOIN pending ON tests.id = pending.id
-      SET tests.laststate = pending.laststate, tests.timestamp_server = :timestamp',
+      'UPDATE tests
+         SET laststate = pending.laststate::jsonb, timestamp_server = :timestamp
+        FROM (VALUES ' . implode(', ', $rows) . ') AS pending (id, laststate)
+       WHERE tests.id = pending.id',
       $params
     );
     return (int) $this->lastAffectedRows;
@@ -529,7 +530,9 @@ class TestDAO extends DAO {
     $this->_(
       'insert into units (test_id, name, laststate, laststate_update_ts, original_unit_id)
       values (:testId, :unitName, :laststate, :laststate_update_ts, :originalUnitId)
-      on duplicate key update laststate = :laststate, laststate_update_ts = :laststate_update_ts;',
+      on conflict (test_id, name) do update set
+        laststate = excluded.laststate,
+        laststate_update_ts = excluded.laststate_update_ts;',
       [
         ':laststate' => json_encode((object)$newState['newState']),
         ':laststate_update_ts' => json_encode($newState['updateTs']),
@@ -618,10 +621,11 @@ class TestDAO extends DAO {
       $this->_(
       'insert into unit_data(unit_name, test_id, part_id, content, ts, response_type)
             values (:unit_name, :test_id, :part_id, :content, :ts, :response_type)
-            on duplicate key update
-              content = if (ts < :ts, :content, content),
-              ts = if (ts < :ts, :ts, ts),
-              response_type = if (ts < :ts, :response_type, response_type);',
+            on conflict (part_id, test_id, unit_name) do update set
+              content = excluded.content,
+              ts = excluded.ts,
+              response_type = excluded.response_type
+            where unit_data.ts < excluded.ts;',
         [
           ':unit_name' => $unitName,
           ':test_id' => $testId,
@@ -776,13 +780,14 @@ class TestDAO extends DAO {
   }
 
   public function getCommands(int $testId, ?int $lastCommandId = null): array {
-    $sql = "select * from test_commands where test_id = :test_id and executed = 0 order by timestamp";
+    $sql = "select * from test_commands where test_id = :test_id and executed = false order by timestamp";
     $replacements = [':test_id' => $testId];
     if ($lastCommandId) {
       $replacements[':last_id'] = $lastCommandId;
       $sql = str_replace(
         'where',
-        'where timestamp > (select timestamp from test_commands where id = :last_id) and ',
+        // the id alone does not identify a row: one command sent to several tests shares its id across them
+        'where timestamp > (select timestamp from test_commands where id = :last_id and test_id = :test_id) and ',
         $sql
       );
     }
@@ -814,7 +819,7 @@ class TestDAO extends DAO {
     }
 
     $this->_(
-      'update test_commands set executed = 1 where test_id = :testId and id = :commandId',
+      'update test_commands set executed = true where test_id = :testId and id = :commandId',
       [':testId' => $testId, ':commandId' => $commandId]
     );
 

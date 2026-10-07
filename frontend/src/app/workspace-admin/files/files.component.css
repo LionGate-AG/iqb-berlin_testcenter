@@ -1,3 +1,7 @@
+.mat-expansion-panel {
+  overflow: unset;
+}
+
 .selected-row {
   background-color: #0080001a;
 }
@@ -96,4 +100,13 @@ mat-cell:first-of-type, mat-header-cell:first-of-type, mat-footer-cell:first-of-
 .full-file-report mat-card-content {
   max-height: 15em;
   overflow-y: auto
+}
+
+.supported-versions {
+  margin-top: 1em;
+  color: gray;
+}
+
+.supported-versions h4 {
+  margin-bottom: 0.3em;
 }

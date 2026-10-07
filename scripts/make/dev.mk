@@ -19,8 +19,7 @@ endif
 
 ## prevents collisions of make target names with possible file names
 .PHONY: init dev-registry-login dev-registry-logout build up down start stop logs composer-install composer-update\
-	composer-refresh-autoload re-init-backend create-interfaces update-docs\
-	docs-api-specs docs-user create-pages serve-pages new-version
+	composer-refresh-autoload init-backend create-interfaces
 
 # Initialized the Application. Run this right after checking out the Repo.
 init:
@@ -28,7 +27,6 @@ init:
 	cp $(TC_BASE_DIR)/.env.prod-template $(TC_BASE_DIR)/.env.prod
 	cp $(TC_BASE_DIR)/frontend/src/environments/environment.dev.ts $(TC_BASE_DIR)/frontend/src/environments/environment.ts
 	chmod 0755 $(TC_BASE_DIR)/scripts/database/000-create-test-db.sh
-	mkdir -m 777 -p $(TC_BASE_DIR)/docs/dist
 
 # Log in to selected registry (see .env.dev file)
 dev-registry-login:
@@ -117,8 +115,8 @@ connect-db:
 	docker compose\
 			--env-file .env.dev\
 			--file docker-compose.yml\
-			--file docker-compose.prod.yml\
-		exec db mysql --user=$(MYSQL_USER) --password=$(MYSQL_PASSWORD) $(MYSQL_DATABASE)
+			--file docker-compose.dev.yml\
+		exec db psql --username=$(DB_USER) --dbname=$(DB_DATABASE)
 
 composer-install:
 	docker run --rm --interactive --tty\
@@ -181,32 +179,28 @@ data-push:
 				--env-file .env.dev\
 				--file docker-compose.yml\
 				--file docker-compose.dev.yml\
-			exec backend sh -c 'rm -rf ../data/*' &&\
+			exec backend sh -c 'rm -rf ../data/* ../data/.schemas/*' &&\
 		tar -cf - data --owner www-data --group www-data |\
 			docker compose\
 					--env-file .env.dev\
 					--file docker-compose.yml\
 					--file docker-compose.dev.yml\
 				cp - backend:/var/www/testcenter &&\
-	$(MAKE) -f $(firstword $(MAKEFILE_LIST)) re-init-backend
+	$(MAKE) -f $(firstword $(MAKEFILE_LIST)) init-backend
 
-# Re-runs the initialization script of the backend to apply new database patches and re-read the data-dir.
-re-init-backend:
+# Installs the database schema, applies new patches and reads the data-dir - the dev stack's
+# counterpart of `testcenter-init`.
+init-backend:
 	cd $(TC_BASE_DIR) &&\
 	docker compose\
 			--env-file .env.dev\
 			--file docker-compose.yml\
 			--file docker-compose.dev.yml\
-		exec --no-TTY backend php /var/www/testcenter/backend/initialize.php
+		run --rm --no-TTY --entrypoint /initialize_only.sh backend
 
 # Creates some interfaces for booklets and test-modes out of the definitions.
 create-interfaces:
 	cd $(TC_BASE_DIR) && make .run-task-runner task=create-interfaces
-
-update-docs:
-	cd $(TC_BASE_DIR) &&\
-	make docs-api-specs &&\
-	make docs-user
 
 # Performs a single task on the whole project using the task-runner
 # Param: task - For available tasks see scripts in see /package.json # TODO make clear wich ones are for task runner and which ones are for local usage
@@ -218,35 +212,3 @@ update-docs:
 			--file test/docker-compose.api-test.yml\
 		run --build --rm --no-deps task-runner\
 			npm run $(task)
-
-# Creates a documentation (with ReDoc) of the the API between frontend and backend
-docs-api-specs:
-	cd $(TC_BASE_DIR) && make .run-task-runner task=backend:update-specs
-
-# Creates some documentation-files about custom-texts, booklet-configurations and other out of the definitions.
-docs-user:
-	cd $(TC_BASE_DIR) && make .run-task-runner task=create-docs
-
-create-pages:
-	cd $(TC_BASE_DIR) &&\
-		docker build\
-				--target jekyll\
-				--build-arg REGISTRY_PATH=$(DOCKERHUB_PROXY)\
-				--tag jekyll\
-				--file docs/Dockerfile\
-			.
-	docker run --rm jekyll
-
-serve-pages:
-	cd $(TC_BASE_DIR) && docker build --target jekyll-serve --tag jekyll-serve -f docs/Dockerfile .
-	docker run --rm -p 4000:4000 jekyll-serve
-
-new-version:
-	cd $(TC_BASE_DIR) &&\
-	docker compose\
-			--env-file .env.dev\
-			--file docker-compose.yml\
-			--file docker-compose.dev.yml\
-		run --rm --entrypoint="" backend\
-			php /var/www/testcenter/backend/test/update-sql-scheme.php &&\
-	make .run-task-runner task="new-version $(version)"

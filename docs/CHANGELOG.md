@@ -1,19 +1,191 @@
-# next
+# 19.0.0
+
+## Umstieg von MySQL auf PostgreSQL
+
+Testcenter verwendet PostgreSQL 18.4 statt MySQL. Das Update überträgt die vorhandenen MySQL-Daten **nicht**: Die
+Anwendung startet mit einer leeren PostgreSQL-Datenbank im neuen Volume `postgres_vol`, das alte Volume `db_vol`
+bleibt unverändert liegen. Workspaces, ihre Dateien und die Logins aus den Testtaker-Dateien entstehen beim ersten
+Start automatisch neu; Testergebnisse, Logs, Reviews und alle Admin-Konten gehen verloren. Danach existiert nur das
+Konto `super` mit dem Passwort aus `ADMIN_INIT_PASSWORD`, das sofort geändert werden sollte. Wer aktualisiert,
+sollte vorher die noch benötigten Ergebnisse exportieren.
+
+Vorbereitung, Ablauf, Zugriff auf die alten Daten und Rollback beschreibt
+[Transition from MySQL to PostgreSQL](https://github.com/iqb-berlin/testcenter/blob/master/docs/transition-to-postgres.md). Dort stehen auch die Einzelheiten zu den
+folgenden Punkten:
+
+- Die Variablen für Datenbankverbindungen heißen jetzt neutral `DB_*`. Es gibt keinen Rückfall auf alte
+  `MYSQL_*`-Namen oder alternative `POSTGRES_*`-Namen. `make testcenter-update` passt `.env.prod` automatisch an.
+- Das Helm-Chart verwendet PostgreSQL auf Port 5432; Werte und Secret-Schlüssel ändern sich.
+- Eigene Backend-Images brauchen die PHP-Erweiterung `pdo_pgsql`. Die Erweiterung `pdo_mysql` ist nicht mehr nötig.
+- Zeitstempel, die die API unverändert aus der Datenbank ausliefert (`reviewtime` und `createdAt`), tragen jetzt
+  einen UTC-Offset und gegebenenfalls Nachkommastellen. Clients müssen den Offset auswerten.
+
 ## Neue Funktionen
-- Bei der Installation können Mindestlänge und Muster für Superadmin-Passwörter gesetzt werden. Diese werden im Adminbereich validiert und etwaige Probleme angezeigt.
-  - Bei den Gelegenheit wurden die entsprechenden Dialoge visuell etwas verbessert.
+- Beim Ändern des eigenen Kennworts muss nun zusätzlich das aktuelle Kennwort eingegeben werden, um die Änderung zu bestätigen. Dies betrifft nicht das Zurücksetzen eines fremden Kennworts durch Super-Admins.
+- Super-Admin: Beim Löschen von Administrator:innen muss nun zusätzlich das eigene Kennwort eingegeben werden, um die Löschung zu bestätigen.
+- Super-Admin: Beim Löschen von Arbeitsbereichen muss nun zusätzlich das eigene Kennwort eingegeben werden, um die Löschung zu bestätigen.
+- Anmeldungen ohne Kennwort lassen sich für eine Installation vollständig abschalten (`REQUIRE_LOGIN_PASSWORD`, siehe Technisches). Ist das eingeschaltet, werden Logins ohne Kennwort abgewiesen und Testtakers-Dateien mit solchen Logins als fehlerhaft gemeldet; ausgenommen sind Logins im Modus `sys-check-login`.
 
 ## Änderungen
-- Der custom-text "booklet_console_warning" wurde entfernt
+- Codes werden nun unabhängig von Groß- und Kleinschreibung akzeptiert. Das betrifft sowohl den Login-Code (z. B. für Testhefte, die über einen Code ausgewählt werden) als auch das Freigabewort für gesperrte Testheft-Bereiche (`CodeToEnter`).
+- Hochgeladene XML-Dateien werden wieder gegen ihr XSD-Schema geprüft; Verstöße gegen das Schema verhindern den Upload.
+- (breaking) XML-Dateien werden nur noch akzeptiert, wenn sie eine unterstützte Schema-Version angeben; welche das sind, zeigt die Dateiansicht des Arbeitsbereichs.
+- Die Dokumentation der Login-Modi gibt an, dass Anmeldungen in `monitor-group` und `monitor-study` nach 5 fehlgeschlagenen Anmeldeversuchen gesperrt werden, bis 30 Minuten seit dem letzten Fehlversuch vergangen sind.
+
+## Fehlerbehebungen
+- (breaking) Die Beschriftungen im Systemcheck und in den CSV Reports verwenden die korrekte Schreibweise „Betriebssystem“, „Betriebssystemversion“, „Fenstergröße“, „Browserversion“, „Browsersprache“, „Bildschirmauflösung“ und „Eingabeelementen“.
+- (breaking) Die Zeiteinheit für Millisekunden wird in der Booklet-Konfiguration, im Systemcheck und in neuen CSV-Exporten von Systemcheck-Berichten korrekt als `ms` statt `Ms` geschrieben.
+- Nach einer erfolgreichen Anmeldung wird der Zähler für fehlgeschlagene Anmeldeversuche zurückgesetzt. Damit führt die vorherige Prüfung eines kennwortgeschützten Login-Namens nicht mehr schrittweise zu einer späteren Sperre.
+- In der Gruppenüberwachung sind „Weiter“, „Pause“, „Springe zu“ und „Test entsperren“ deaktiviert, solange kein Test ausgewählt ist. Bisher ließen sie sich anklicken und meldeten lediglich „Keine Tests betroffen“ – etwa direkt nach dem Öffnen einer Gruppe, solange die Liste der Sitzungen noch nicht geladen war.
+- In der Gruppenüberwachung zeigen die Zustände „Test noch nicht gestartet“, „Seite wurde verlassen oder Browserfenster geschlossen“, „Test ist 5 Minuten oder länger inaktiv“ und „Test läuft“ (Polling-Verbindung) wieder ein Symbol; seit Version 18.2.0 blieb es leer. Live- und Polling-Verbindung haben zudem wieder unterschiedliche Symbole (gefüllt bzw. umrandet), seit 18.0.0 sahen sie gleich aus.
+- „Verbleibende Zeit“ wird im Review-Modus nicht länger angezeigt, wenn keine Zeitbeschränkung gesetzt ist.
+- Interne Endpunkte des Broadcast-Service erfordern nun eine Anmeldung und sind nicht mehr öffentlich erreichbar; die Zugangstoken für dessen WebSocket-Verbindungen werden nun zufällig vergeben.
+- Beim Herunterladen von Arbeitsbereichs- und Testressourcen wird der angeforderte Dateipfad nun strikt auf den jeweiligen Arbeitsbereich begrenzt.
+- Ein bereits vergebener Name beim Anlegen oder Umbenennen eines Workspaces und beim Anlegen eines Benutzers wird als „Konflikt mit vorhandenen Daten“ gemeldet. Bisher erschien „Fehlerhafte Daten“, was einen doppelten Namen nicht von einer unvollständigen Eingabe unterschied.
+- Meldet ein Player beim Start keine Verona-Version (weder `apiVersion` noch `metadata.specVersion`), erscheint die Fehlermeldung „Unbekannte Verona-Version“. Bisher brach der Start mit einem unverständlichen Programmfehler ab.
+- Sicherheitsproblem behoben: Angemeldete Personen können nur noch Antworten, Unit-Zustände und Kommandos ihrer eigenen Tests abrufen. Bisher ließen sich über die Test-ID auch die Antworten anderer Testtakers im selben Arbeitsbereich lesen und deren Kommandos als ausgeführt markieren.
+- Reviews können nur noch in den Modi `run-review` und `run-trial` angelegt, geändert und gelöscht werden; in anderen Modi antworten die Review-Endpunkte unter `/test/{test_id}` mit `403`.
+- Bricht die Verbindung eines Testtakers unbemerkt ab (z. B. durch einen Netzwerkausfall), zeigt die Gruppenüberwachung sie nach spätestens einer Minute als verloren an. Bisher blieb der Test weiter als verbunden angezeigt.
+- Die Dokumentation der Login-Modi weist für `run-demo` und `sys-check-login` korrekt aus, dass bei jedem Einloggen ein neuer Teilnehmer angelegt wird. Bisher war das dort nur für `run-hot-restart` angegeben, obwohl sich die beiden anderen Modi bereits so verhielten.
+- (breaking) Die CSV-Exporte schließen jede Zelle einschließlich der Kopfzeile in Anführungszeichen ein, sodass Semikolons, Anführungszeichen und Zeilenumbrüche in einem Wert in ihrer Zelle bleiben. Bisher war die Spalte `logentry` im Log-Export nicht eingeschlossen, sodass solche Log-Einträge beim Öffnen in Excel auf zusätzliche Spalten oder Zeilen verteilt wurden; sie enthält jetzt den gespeicherten Eintrag unverändert (`\"` statt `""`). Außer beim Systemcheck-Export war die Kopfzeile bisher nicht eingeschlossen, und der Systemcheck-Export ersetzte Anführungszeichen in Werten durch `` ` ``.
 
 ## Technisches
-- Das Kennwort des automatisch angelegten superadmin kann nun via Umgebungsvariable ADMIN_INIT_PASSWORD gesetzt werden.
-  - Das hierbei verwendete Kennwort wird nicht mehr in geloggt.
-- Neue Umgebungsvariable HSTS_ENABLED: Damit kann der Strict-Transport-Security-Header abgeschaltet werden.
+- Beim Löschen einer Anhang-Datei wird die zugehörige Datei nun auch von der Festplatte entfernt. Bisher blieb sie liegen, sodass gelöschte Anhänge weiter Speicherplatz belegten und nicht tatsächlich entfernt wurden.
+- Der Testmodus des Backends (Umschaltung per `TestMode`-Header, nur für die API- und E2E-Tests gedacht) muss nun ausdrücklich mit der neuen Umgebungsvariable `ALLOW_TEST_MODE=true` erlaubt werden; ohne sie wird der Header ignoriert. Die Entwicklungsumgebung (`docker-compose.dev.yml`) setzt sie; in Produktivinstallationen darf sie nicht gesetzt werden.
+- Das Backend beschränkt PHP-Dateizugriffe per `open_basedir` auf `/var/www/testcenter/` und `/tmp/`. Deployments, die Anwendungs- oder Datenverzeichnisse außerhalb dieser Pfade ablegen, müssen den Wert in `backend/config/local.php.ini` anpassen.
+
+### Schnittstellenänderungen (breaking)
+- Schema-Verweise in XML-Dateien (`xsi:noNamespaceSchemaLocation`) werden nur noch als Permalink der Form `https://w3id.org/iqb/spec/<repo>/<version>` erkannt. Die alten GitHub-URLs der Form `…/testcenter/<version>/definitions/vo_<Typ>.xsd` werden abgelehnt.
+- `PATCH /user/{user_id}/password` verlangt bei einer Selbstbedienungs-Kennwortänderung (also wenn `user_id` der ID des anfragenden Nutzers entspricht) zusätzlich das Feld `oldPassword` im Request-Body; es wird gegen das aktuelle Kennwort des anfragenden Nutzers geprüft. Clients, die diesen Endpunkt zur eigenen Kennwortänderung nutzen und `oldPassword` nicht mitsenden, erhalten `400`. Beim Zurücksetzen eines fremden Kennworts durch Super-Admins ändert sich nichts, `oldPassword` bleibt dort unbenutzt.
+- `DELETE /users` verlangt zusätzlich das Feld `p` (Passwort des anfragenden Nutzers) im Request-Body; es wird gegen das aktuelle Kennwort des anfragenden Super-Admins geprüft. Clients, die diesen Endpunkt nutzen und `p` nicht mitsenden, erhalten `400`.
+- `DELETE /workspaces` verlangt ebenfalls zusätzlich das Feld `p` (Passwort des anfragenden Nutzers) im Request-Body, aus demselben Grund und mit denselben Auswirkungen wie bei `DELETE /users`.
+- `PUT /workspace`, `PATCH /workspace/{ws_id}` und `PUT /user` antworten auf einen bereits vergebenen Namen mit `409`. Bisher war es `400`, das damit sowohl den Namenskonflikt als auch einen unvollständigen oder ungültigen Request-Body meldete; für letztere bleibt es bei `400`. Clients, die den Konflikt an `400` erkennen, müssen angepasst werden.
+- Der File-Server antwortet mit `403`, wenn ihm der Zugriff auf eine vorhandene Datei verwehrt ist, und mit `500` bei einem internen Fehler. Bisher meldete er in beiden Fällen `404`, sodass sich eine fehlende Berechtigung und ein Serverfehler nicht von einer fehlenden Datei unterscheiden ließen; die API-Dokumentation führte beide Codes bereits auf.
+
+### API-Verhalten
+- `GET /test/{test_id}/unit/{unit_name}`, `GET /test/{test_id}/commands` und `PATCH /test/{test_id}/command/{command_id}/executed` antworten mit `403`, wenn der Test nicht zur anfragenden Person gehört, wie die übrigen Endpunkte unter `/test/{test_id}`.
+- `GET /system/config` liefert im neuen Feld `xmlSchemaVersions` je Dateityp das Schema-Repository sowie die niedrigste und höchste unterstützte Hauptversion.
+- `GET /test/{test_id}/commands` mit `lastCommandId` liefert die Kommandos des angefragten Tests, statt mit einem Serverfehler abzubrechen. Bisher suchte der Endpunkt den Zeitstempel allein über die ID; da ein an mehrere Tests geschicktes Kommando dieselbe ID auf mehreren Zeilen trägt, brach die Abfrage ab. Die Testanwendung selbst sendet `lastCommandId` nicht; betroffen waren nur Anwendungen, die die API direkt nutzen.
+- `GET /workspace/{ws_id}/report/{type}` und `GET /reviews/export` werten den `Accept`-Header jetzt gleich aus: Media-Type-Parameter wie in `text/csv;charset=utf-8` werden ignoriert, aus einer Liste gewinnt der erste lieferbare Typ. Bisher verlangte der Report-Endpunkt exakt `text/csv` und lieferte sonst kommentarlos JSON – auch bei `text/csv;charset=utf-8`, also genau dem Wert, den die Spezifikation als Antwort-Media-Type ausweist. Die Vorgabe bei fehlender oder nicht erfüllbarer Angabe bleibt unverändert (JSON für die Report-Endpunkte, CSV für `GET /reviews/export`).
+- Die Endpunkte unter `/assets` liefern Fehler nun wie alle anderen Endpunkte als Text über den zentralen ErrorHandler, also mit `Error-ID`-Header. Bisher lieferten sie stattdessen ein JSON-Objekt der Form `{"error": "..."}` ohne `Error-ID` und waren damit der letzte verbliebene Sonderfall im Backend.
+- Anfragen an nicht existierende Routen werden wie jeder andere Fehler über den zentralen ErrorHandler behandelt und liefern einen Text im Body. Bisher lieferten sie einen `404` ohne Body-Text und waren damit die einzige Fehlerantwort des Backends ohne Text.
+- Bei internen Serverfehlern (Status `5xx`) enthält der Antwort-Body keine internen Fehlerdetails mehr, sondern einen allgemeinen Text; die vollständige Meldung steht wie bisher im Server-Log und ist über den `Error-ID`-Header auffindbar. Die für Clients gedachten `4xx`-Meldungen bleiben unverändert.
+- Der File-Server schickt bei `403` und `500` einen `Error-ID`-Header (`fs-` gefolgt von der nginx-Request-ID) und schreibt dieselbe ID in sein Log.
+- Antworten mit Datei-Inhalten (Downloads von Arbeitsbereichs- und Testressourcen über das Backend sowie Auslieferungen des File-Servers) senden `Cache-Control: private`, damit geteilte Caches wie ein CDN diese authentifizierten Antworten nicht speichern und ohne erneute Prüfung ausliefern; der private Browser-Cache bleibt möglich.
+- Das Feld `laststate` in `GET /workspace/{ws_id}/report/response` ist anders formatiert: ein Leerzeichen nach den Doppelpunkten, eine andere Reihenfolge der Schlüssel und `\uXXXX`-Escapes als das Zeichen, für das sie stehen. Der Inhalt ist unverändert, wer den Wert als JSON einliest, ist nicht betroffen.
+
+### API-Dokumentation
+- Die API-Dokumentation von `GET /workspace/{ws_id}/report/log` deklariert `timestamp` als Zahl und führt das Feld `originalUnitId` auf. Bisher war `timestamp` als `string` deklariert, obwohl der Endpunkt immer eine Zahl geliefert hat, und `originalUnitId` fehlte ganz, obwohl es in beiden Formaten enthalten ist.
+- Die Zeitstempel-Felder `reviewtime`, `date` in `SysCheckReport` und `latest_modification_ts` sind in der API-Dokumentation mit ihrem tatsächlichen Format deklariert. Bisher stand dort `format: date-time` (RFC 3339, also `2021-07-29T10:00:00Z`), ein Format, das kein Feld jemals geliefert hat; aus der Spezifikation generierte Clients konnten diese Werte nicht einlesen.
+- Das Feld `responses` im Schema `ResponseReport` (`docs/api/components.spec.yml`, Endpunkt `GET /workspace/{ws_id}/report/response`) ist als Array von Response-Teil-Objekten (`id`, `content`, `ts`, `responseType`) deklariert. Bisher stand dort `type: string`, obwohl die Antwort schon immer ein solches Array enthielt und das zugehörige Beispiel es bereits korrekt darstellte.
+- Die API-Dokumentation führt die Fehlerantworten `400` und `409` von `PUT /workspace`, `PATCH /workspace/{ws_id}`, `PUT /user` und `PATCH /user/{user_id}/password` jetzt auf, samt der Ursachen, die zu ihnen führen. Bisher waren sie dort nicht dokumentiert.
+- Der `Accept`-Header ist in der API-Dokumentation der Endpunkte `GET /workspace/{ws_id}/report/log`, `.../report/response` und `.../report/sys-check` jetzt als Parameter aufgeführt. Bisher war er dort nicht dokumentiert, obwohl alle drei Endpunkte wahlweise CSV oder JSON liefern; die Beschreibungen aller Report-Endpunkte nennen zudem den jeweiligen Standardwert.
+- Für alle Fehlerantworten (4xx/5xx) ist in der API-Dokumentation (`docs/api/*.spec.yml`) nun dokumentiert, dass sie einen Body-Text enthalten.
+
+### Betrieb und Installation
+- Neue Umgebungsvariable `REQUIRE_LOGIN_PASSWORD` (Standard `false`, Helm: `config.backend.requireLoginPassword`). Mit `true` verweigert das Backend jede Anmeldung ohne Kennwort außer im Modus `sys-check-login`, und die Dateiprüfung meldet Testtakers-Dateien mit solchen Logins als fehlerhaft. Da die Arbeitsbereichsdateien beim Start neu eingelesen werden, sind nach dem Einschalten und einem Neustart alle Testtakers-Dateien mit mindestens einem Login ohne Kennwort samt all ihrer Logins nicht mehr nutzbar, bis jeder Login ein Kennwort hat.
+- nginx im Frontend-Container und die Traefik-Route im Helm-Chart leiten nur noch `/bs/public/ws` an den Broadcast-Service weiter statt aller Pfade unter `/bs/public/`. Wer einen eigenen Reverse-Proxy vor den Broadcast-Service schaltet, muss dessen Weiterleitung ebenso auf diesen einen Pfad beschränken; das Backend erreicht die übrigen Endpunkte weiterhin intern über `http://broadcaster:3000`.
+- Installer und `make testcenter-update` setzen einen zufälligen `SERVER_KEY`, wo noch der Standardwert `Secret` steht. (breaking) Im Helm-Chart ist `secret.backend.serverKey` jetzt ein Pflichtwert ohne Standard, bisher `Secret`.
+- Neue Umgebungsvariable `XML_SCHEMA_VALIDATION` (Standard: `true`) schaltet die Prüfung hochgeladener XML-Dateien gegen ihr XSD-Schema ein oder aus.
+- Der erste System-Administrator wird jetzt unabhängig von `NO_SAMPLE_DATA` angelegt. Bisher unterdrückte `NO_SAMPLE_DATA=yes` neben den Beispieldaten auch seine Anlage: Eine so aufgesetzte Neuinstallation hatte überhaupt kein Konto, und niemand konnte sich anmelden.
+- Der Standardwert für `BRUTE_FORCE_PROTECTION` in `.env.prod-template` ist in Anführungszeichen gesetzt. Bisher führte er beim Einlesen der Datei zum Fehler `login: Cannot possibly work without effective root`. Installationen, die bereits über Version 18.2.0 aktualisiert wurden, sollten die Zeile in ihrer `.env.prod` manuell auf `BRUTE_FORCE_PROTECTION='admin login person'` setzen.
+- Die neuen Kommandos `make testcenter-backup` und `make testcenter-restore BACKUP=<verzeichnis>` sichern Datenbank und Backend-Dateien gemeinsam und stellen sie gemeinsam wieder her. Ein Backup ist ein Verzeichnis unter `backup/` mit UTC-Zeitstempel. Was ein Set enthält, was separat gesichert werden muss und welche Werte aus `.env.prod` zu einem Set passen müssen, beschreibt [Installation and Update](https://pages.cms.hu-berlin.de/iqb/testcenter/pages/installation-prod.html).
+- Das Backup, das `make testcenter-update` vor der Aktualisierung anlegt, ist nun ein solches Backup-Set und lässt sich mit `make testcenter-restore` wiederherstellen.
+- `install.sh` und `update.sh` sind nun schlanke, versionsunabhängige Bootstrap-Skripte: Sie ermitteln nur noch die gewünschte Release-Version und laden anschließend die eigentliche Installations- bzw. Update-Logik der passenden Release-Version nach (`scripts/installer.sh` bzw. `scripts/updater.sh`). Der bisherige Mechanismus, bei dem `install.sh`/`update.sh` sich selbst mit der Zielversion verglichen und sich bei Abweichung durch sich selbst ersetzten, entfällt damit.
+  - Bei `update.sh` wird `scripts/updater.sh` dabei zweimal geladen: einmal aus der aktuell installierten Version (für Backup und Migrationsskripte, deren Logik zur tatsächlich laufenden Installation passen muss) und einmal aus der Zielversion (für Datei-Updates, Einstellungen und Neustart).
+- Der Backend-Container fährt beim Stoppen geordnet herunter und endet mit Exit-Code 0. Bisher reagierte er nicht auf das Stopp-Signal, wurde nach 10 Sekunden per SIGKILL beendet (Exit-Code 137) und brach dabei laufende Anfragen ab. Stoppen, Neustarten und Aktualisieren dauern entsprechend 10 Sekunden kürzer.
+- Es gibt eine neue Umgebungsvariable `COMPOSE_PROJECT_NAME` (siehe `.env.dev-template`/`.env.prod-template`), mit der sich Container, Volumes und das Docker-Netzwerk benennen lassen. Sie dient dazu, eine Dev- und eine Produktivinstallation auf demselben Host kollisionsfrei parallel betreiben zu können. Der Netzwerkname war zuvor fest auf `testcenter` gesetzt und ist nun auf `${COMPOSE_PROJECT_NAME:-testcenter}` konfiguriert. Solange `COMPOSE_PROJECT_NAME` nicht gesetzt ist, bleibt der Netzwerkname weiterhin `testcenter`, sodass bestehende Installationen von dieser Änderung nicht betroffen sind.
+- Das Einlesen der Arbeitsbereichsdateien beim Start ist etwa dreimal schneller als vorher und geschieht je Arbeitsbereich nun vollständig oder gar nicht; bisher blieben bei einem Abbruch die bis dahin gelesenen Dateien in der Datenbank zurück.
+
+# 18.3.0
+
+## Änderungen
+- Ein Klick auf das Logo während eines laufenden Tests führt nicht mehr auf eine Zwischenseite mit Statusinformationen.
+- Navigationsknöpfe sind nicht mehr deaktiviert, wenn nicht weiternavigiert werden kann. Somit haben Testlinge die Möglichkeiten den Knopf zu benutzen und über die erscheinende Meldung zu erfahren, warum es nicht weitergeht.
+- Freigabewörter werden in den entsprechenden Modi nicht mehr voreingetragen. Hier war eine Änderung nötig, da das alte
+  Verfahren nicht für die neue Codeeingabe über Symbole funktioniert. Stattdessen wird das Freigabewort nun angezeigt
+  und muss abgeschrieben werden.
+- Kurzmeldungen (Snackbar), die kurz nacheinander ausgelöst werden, werden nun gestapelt angezeigt, statt dass eine neue Meldung die vorherige sofort ersetzt.
+- Der Dialog zur Fehlerbehandlung wurde visuell und inhaltlich überarbeitet.
+  - Fehler werden nun in einem Dialog angezeigt, statt auf eine eigene Statusseite zu navigieren.
+  - Es gibt nun keine Möglichkeit mehr, Fehlerberichte automatisch auf GitHub hochzuladen oder als Datei herunterzuladen. Diese Funktionen wurden in der Vergangenheit selten bis nie benutzt. Das betrifft auch die zugehörigen Konfigurationsmöglichkeiten für Super-Admins.
+  - Es gibt kein automatisches Neuladen der Anwendung mehr. Erst wenn der Dialog geschlossen wird, wird die Anwendung neu geladen.
+  - Der Stacktrace eines Fehlers wird nun auch in den Fehlerdetails (nicht mehr nur in der Browser-Konsole) angezeigt. Dies soll dabei helfen, selten und scheinbar zufällig auftretende Fehler anhand eines gemeldeten Fehlers genauer nachvollziehen zu können.
+- Die Standardtexte folgender custom-texts wurden angepasst: `booklet_warningLeaveTimerBlockTextPrompt`,
+  `booklet_warningLeaveTextPrompt-testlet`, `booklet_warningLeaveTextPrompt-unit`. Die abschließende Frage
+  "Trotzdem weiterblättern?" wurde entfernt, da diese Entscheidung bereits eindeutig durch die Beschriftung der
+  Dialog-Knöpfe ("Hier bleiben" / "Trotzdem weiter") abgebildet wird.
+  - **Hinweis für Testheft-Ersteller:innen:** Wurde für eines dieser drei custom-texts ein eigener Text hinterlegt,
+    sollte dieser geprüft und ggf. entsprechend gekürzt werden, damit er nicht weiterhin redundant nach dem
+    Weiterblättern fragt.
+- Der custom-text `booklet_codeToEnterWarning` wurde entfernt.
+- Alle Vorkommen von "System-Check" wurden durch die einheitliche Schreibweise "Systemcheck" ersetzt. Das betrifft
+  Seitentitel, Menüeinträge und Schaltflächen sowie die Beschriftungen und Standardtexte der custom-texts
+  `syscheck_intro` und `syscheck_report_aboutPassword`.
+- Auf der Startseite des Systemchecks wird nicht mehr auf den "grünen Schalter" verwiesen, da die entsprechende
+  Schaltfläche nicht mehr grün ist.
+
+## Fehlerbehebungen
+- Testheft-Anzeige: Beim (Neu-)Start eines Tests gab es bisher eine sichtbare Unterbrechung zwischen zwei unterschiedlichen Ladeanzeigen (erst ein einfacher Text ohne Fortschrittsanzeige, kurz danach ein Fortschrittsbalken, mit einer kurzen leeren Lücke dazwischen) und die Adresse im Browser wechselte sichtbar, bevor die erste Aufgabe tatsächlich bereit war. Es wird nun durchgehend dieselbe Fortschrittsanimation angezeigt, und es wird erst dann zur ersten Aufgabe gewechselt, wenn diese vollständig geladen ist.
+  - Dabei wurde außerdem ein Fehler behoben, durch den beim Wechsel in einen noch nicht fertig geladenen Aufgabenblock (z.B. bei aktiviertem "lazy loading") unter Umständen kurzzeitig eine leere/weiße Fläche statt der Ladeanimation angezeigt wurde.
+- Die automatisierten Systemtests für Hot-Restart und Hot-Return wählen beim Ergebnisdownload nun die vorgesehene
+  Login-Gruppe unabhängig von der Reihenfolge der Ergebniszeilen aus.
+- Workspace-Admin:
+  - In der Dateien-Ansicht wird der Tooltip mit Information bzw. Warnungen zu einer Datei nicht mehr abgeschnitten.
+- Testheft-Anzeige: Beim Verlassen einer Aufgabe zurück ins Startmenü erschienen bisher unter Umständen zwei Bestätigungsdialoge nacheinander (etwa bei einem zeitbeschränkten Block oder einer Bereichssperre). Es erscheint nun nur noch ein einziger, zusammengeführter Dialog.
+- In den Review-Modi wird die Aufgaben-Übersicht nun angezeigt, auch wenn die Booklet-Konfiguration
+  (`toolbar_show_unit_list`) dies nicht vorsieht.
+- Beim Beenden eines Tests wird dieser nun zuverlässig gesperrt, sofern über `lock_test_on_termination` konfiguriert.
+  Bisher wurde die Sperre erst nach dem Wechsel ins Startmenü angefordert und daher unter Umständen nicht mehr
+  ausgeführt.
+- Der Hinweisdialog, der bei unterbundener Navigation erscheint, zeigte immer die Überschrift "Anleitung" anstelle der
+  jeweils vorgesehenen.
+- Nach einem Sitzungsfehler wird die Anwendung beim Schließen des Fehlerdialogs nun korrekt neu geladen und die
+  gespeicherten Anmeldedaten werden verworfen.
+- Ist beim Verlassen einer Aufgabe kein Testheft vorhanden, wird nun ein Fehler angezeigt. Bisher wurde auf eine
+  Statusseite umgeleitet, von der aus der Test nur beendet werden konnte, ohne die Ursache beheben zu können.
+- Super-Admin: Wird beim Setzen/Entziehen des Super-Admin-Status ein falsches (eigenes) Kennwort eingegeben, erscheint die Meldung nun direkt im Dialog und der Dialog bleibt für einen erneuten Versuch geöffnet. Bisher erschien stattdessen der allgemeine, technische Fehlerdialog, und der Passwort-Dialog hatte sich bereits geschlossen, sodass der gesamte Vorgang (Auswahl, Aktion) wiederholt werden musste.
+- Auf der Codeeingabemaske im Testablauf wird nun korrekt der custom-text `booklet_codeToEnterPrompt` unter der
+  Überschrift angezeigt.
+
+## Technisches
+- Die App-Einstellungen `bugReportTarget` und `bugReportAuth` (Ziel-Repository und GitHub-Token für automatische
+  Fehlerberichte) werden nicht mehr verwendet und sind aus dem Super-Admin-Bereich entfernt. Ein dort hinterlegtes
+  Token hat keine Funktion mehr und sollte ggf. widerrufen werden.
+- Alle Logs, die in die Log-Datei des Adminbereichs geschrieben werden, sind nun dokumentiert:
+  `docs/pages/logging.md`.
+
+# 18.2
+## Neue Funktionen
+- Bei der Installation können Mindestlänge und Muster für Superadmin-Passwörter gesetzt werden. Diese werden im Adminbereich validiert und etwaige Probleme angezeigt.
+  - Bei der Gelegenheit wurden die entsprechenden Dialoge etwas verbessert.
+
+## Änderungen
+- Der custom-text "booklet_console_warning" wurde entfernt.
+- Kommentare:
+  - Die Überschrift der Kommentarliste im Kommentar-Panel wurde von „alle Kommentare zu diesem Testheft“ zu „Kommentare zum gesamten Testheft“ geändert, um den Inhalt besser zu beschreiben.
+  - Visuelle Verbesserungen im Kommentar-Panel: mehr Abstand zwischen Einträgen, Einträge auf 2 Zeilen begrenzt, Panel mit maximaler Breite versehen, damit der Hauptbereich immer sichtbar bleibt.
+
+## Fehlerbehebungen
+- Der Hinweistext bei Navigation aus einer Aufgabe im Review-Modus, die ein vollständiges Ansehen oder Beantworten erzwingt (force_presentation/reponse_complete), wurde korrigiert.
+- Die Knöpfe `navbar_forward_button` und `navbar_backward_button` werden nur noch bei gültigen Konfigurationswerten angezeigt (bisher erschienen sie bei jedem Wert außer `HIDDEN`).
+- Seitennavigation über `navbar_forward_button`/`navbar_backward_button`, die den Anfang bzw. das Ende überschreiten werden nun verhindert; stattdessen erscheint ein entsprechender Hinweis.
+- Klick auf das Logo überspringt nun nicht mehr Dialoge in beschränkten Blöcken; z.B. war es vorher möglich das Dialogfenster von zeitbeschränkten Blöcken zu überspringen.
+
+## Technisches
+- Das Kennwort des automatisch angelegten superadmin kann nun via Umgebungsvariable `ADMIN_INIT_PASSWORD` gesetzt werden.
+  - Das hierbei verwendete Kennwort wird nicht mehr in den Logs angezeigt.
+- Neue Umgebungsvariable `HSTS_ENABLED`: Damit kann der Strict-Transport-Security-Header abgeschaltet werden.
+- Neue Umgebungsvariable `SERVER_KEY` zur zentralen Konfiguration des Server-Schlüssels.
+- Neue Umgebungsvariable `PASSWORD_MIN_LENGTH`
+- Neue Umgebungsvariable `PASSWORD_PATTERN`
+- Brute-Force-Schutz für Anmeldungen:
+  - Wenn aktiv, muss der eigene Browser bei der Anmeldung als Admin, Login und bei Codeeingabe eine sogenannte Challenge errechnen. Dies verlangsamt den Anmeldeprozess ein wenig, schützt aber den Testcenter Server vor Bot-Angriffen.
+  - Aktivierbar über die neue Umgebungsvariable `BRUTE_FORCE_PROTECTION` in `.env.prod`.
+- Die Backend-Konfigurationsdatei `config/config.ini` wurde entfernt. Das Backend schreibt nicht länger die Werte der Umgebungsvariablen in die Datei, sondern nutzt diese direkt. Alle anderen Werte in dieser Datei haben definierte Standardwerte direkt im Code.
 - Die Bibliothek zur automatischen Kodierung wurde auf `@iqb/responses` 5.2.2 aktualisiert.
 
 # 18.1.1
-
 ## Änderungen
 - Folgende custom-texts haben keine Funktion mehr und wurden entfernt:
   - booklet_loadingBlock

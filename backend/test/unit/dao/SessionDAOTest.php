@@ -171,6 +171,7 @@ class SessionDAOTest extends TestCase {
   }
 
   function tearDown(): void {
+    SystemConfig::$login_requirePassword = false;
     unset($this->dbc);
   }
 
@@ -305,6 +306,15 @@ class SessionDAOTest extends TestCase {
     $this->dbc->createOrUpdatePersonSession($this->testLoginSession, 'wrong_code');
   }
 
+  // Codes must be accepted regardless of letter case, since test-takers type them in by hand.
+  function test_createOrUpdatePersonSession_codeCaseInsensitive() {
+    $result = $this->dbc->createOrUpdatePersonSession($this->testLoginSession, 'EXISTING_CODE');
+
+    $this->assertEquals(6, $result->getPerson()->getId());
+    // the code is stored/returned as typed - only the comparison is case-insensitive
+    $this->assertEquals('EXISTING_CODE', $result->getPerson()->getCode());
+  }
+
   function test_createOrUpdatePersonSession_expiredLogin() {
     $testLoginSession = new LoginSession(
       1,
@@ -385,6 +395,28 @@ class SessionDAOTest extends TestCase {
     $this->assertEquals('existing_code/h5ki-bd-', $result1->getPerson()->getNameSuffix());
     $this->assertEquals(7, $result2->getPerson()->getId());
     $this->assertEquals('existing_code/va4dg-jc', $result2->getPerson()->getNameSuffix());
+    $this->assertEquals(7, $this->countTableRows('person_sessions'));
+  }
+
+  function test_createOrUpdatePersonSession_retriesPostgresSuffixCollision() {
+    // Arrange the exact collision seen in the system test. srand(1) makes the next generated suffix `h5ki-bd-`;
+    // placing that suffix in the database first forces PostgreSQL to report SQLSTATE 23505.
+    $this->dbc->_(
+      'insert into person_sessions (token, code, login_sessions_id, valid_until, name_suffix)
+       values (:token, :code, :login_id, :valid_until, :suffix)',
+      [
+        ':token' => 'pre-existing-collision-token',
+        ':code' => 'existing_code',
+        ':login_id' => $this->testLoginSession->getId(),
+        ':valid_until' => '2030-01-01 12:00:00+00',
+        ':suffix' => 'existing_code/h5ki-bd-'
+      ]
+    );
+
+    $result = $this->dbc->createOrUpdatePersonSession($this->testLoginSession, 'existing_code');
+
+    // The failed insert consumes an identity value in PostgreSQL, so assert the behavior rather than a brittle id.
+    $this->assertEquals('existing_code/va4dg-jc', $result->getPerson()->getNameSuffix());
     $this->assertEquals(7, $this->countTableRows('person_sessions'));
   }
 
@@ -519,7 +551,7 @@ class SessionDAOTest extends TestCase {
         \'{"xxx":["BOOKLET.SAMPLE-1"]}\',
         \'unit test\',
         null,
-        \'2030-01-02 10:00:00\',
+        \'2030-01-02 10:00:00+01:00\',
         null,
         \'new_id\', -- this can happen as result of a re-upload of a TT.xml with changed group-id
         \'Sample Group\'
@@ -566,7 +598,7 @@ class SessionDAOTest extends TestCase {
 
   public function test_getLogin_missingPasswordProtected(): void {
     $loginSession = $this->dbc->getLogin("monitor", "wrong");
-    $this->assertEquals(FailedLogin::wrongPasswordProtectedLogin, $loginSession);
+    $this->assertEquals(FailedLogin::wrongPasswordLockableLogin, $loginSession);
   }
 
   public function test_getLogin_missingUser(): void {
@@ -577,6 +609,27 @@ class SessionDAOTest extends TestCase {
   public function test_getLogin_futureUser(): void {
     $this->expectException(HttpError::class);
     $this->dbc->getLogin("future_user", "pw_hash");
+  }
+
+  public function test_getLogin_passwordRequired(): void {
+    $this->insertPasswordlessLogin('no-pw', 'run-hot-return');
+    $this->insertPasswordlessLogin('no-pw-sys-check', 'sys-check-login');
+
+    $this->assertInstanceOf(Login::class, $this->dbc->getLogin("no-pw", ""));
+
+    SystemConfig::$login_requirePassword = true;
+
+    $this->assertEquals(FailedLogin::wrongPassword, $this->dbc->getLogin("no-pw", ""));
+    $this->assertInstanceOf(Login::class, $this->dbc->getLogin("no-pw-sys-check", ""));
+    $this->assertInstanceOf(Login::class, $this->dbc->getLogin("test", "pw_hash"));
+  }
+
+  private function insertPasswordlessLogin(string $name, string $mode): void {
+    $this->dbc->_(
+      "insert into logins (name, password, mode, workspace_id, codes_to_booklets, source, valid_to, group_name, group_label, custom_texts)
+        values (:name, '', :mode, 1, '{}', 'test', '2030-01-02 10:00:00+01:00', 'sample_group', 'Sample Group', '{}')",
+      [':name' => $name, ':mode' => $mode]
+    );
   }
 
   public function test_getTestStatus(): void {
@@ -610,6 +663,15 @@ class SessionDAOTest extends TestCase {
     $this->assertFalse($result);
   }
 
+  // codes_to_booklets is keyed by the code as configured ("xxx"); a person who logged in with a
+  // differently-cased code ("XXX") must still resolve to the same booklet allow-list.
+  public function test_personHasBooklet_codeCaseInsensitive(): void {
+    $personSession = $this->dbc->createOrUpdatePersonSession($this->testDataLoginSessions[3], 'XXX');
+
+    $result = $this->dbc->personHasBooklet($personSession->getPerson()->getToken(), 'BOOKLET.SAMPLE-1');
+    $this->assertTrue($result);
+  }
+
   public function test_getOwnedTest() {
     // Takes the person_sessions.id, not the token string (the caller already has
     // the id from getToken(), so re-joining person_sessions was redundant), and
@@ -622,11 +684,13 @@ class SessionDAOTest extends TestCase {
     $result = $this->dbc->getOwnedTest(1, "1");
     $this->assertIsArray($result, 'owner gets the row back');
     $this->assertArrayHasKey('laststate', $result, 'row carries laststate for reuse');
-    // testdata.sql seeds test 1 with laststate '{"CURRENT_UNIT_ID":"UNIT_1"}'.
-    $this->assertSame('{"CURRENT_UNIT_ID":"UNIT_1"}', $result['laststate']);
+    // testdata.sql seeds test 1 with laststate '{"CURRENT_UNIT_ID":"UNIT_1"}'. Compared decoded:
+    // PostgreSQL re-formats jsonb on output ('{"CURRENT_UNIT_ID": "UNIT_1"}').
+    $this->assertSame(['CURRENT_UNIT_ID' => 'UNIT_1'], JSON::decode($result['laststate'], true));
     // person_id is carried so TestDAO::updateTestState can keep the test-state
     // cache current without another read.
     $this->assertEquals(1, $result['person_id'], 'row carries the owning person');
+
 
     // Non-owner (and, identically, a non-existent test) gets null -> caller 403s.
     $this->assertNull($this->dbc->getOwnedTest(4, "1"));

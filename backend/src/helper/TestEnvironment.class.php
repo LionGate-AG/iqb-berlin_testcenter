@@ -3,13 +3,13 @@
 declare(strict_types=1);
 
 use JetBrains\PhpStorm\NoReturn;
-use org\bovigo\vfs\vfsStream;
-use org\bovigo\vfs\vfsStreamContent;
-use org\bovigo\vfs\vfsStreamWrapper;
 
 class TestEnvironment {
   const int staticDate = 1627545600;
   const array testModes = ['prepare', 'api', 'integration', 'prepare-integration'];
+  // separate directories, so resetting one suite's files never touches the other's
+  const string integrationTestDataDir = 'data-TEST';
+  const string apiTestDataDir = 'data-TEST-api';
   static string | null $testMode = null;
 
 
@@ -21,19 +21,18 @@ class TestEnvironment {
       SystemConfig::$debug_useStaticTime = '@' . (int) $testClock;
       SystemConfig::$debug_useStaticTokens = true;
       SystemConfig::$debug_useInsecurePasswords = true;
-      SystemConfig::$debug_allowExternalXmlSchema = false;
       SystemConfig::$debug_fastLoginReuse = true;
       self::makeRandomStatic();
       DB::connectToTestDB();
 
       if (self::$testMode == 'integration') {
         // this is called every single call from integration tests
-        self::defineTestDataDir(false);
+        self::defineTestDataDir(self::integrationTestDataDir, false);
       }
 
       if (self::$testMode == 'prepare-integration') {
         // this is called one time before each integration test (cypress)
-        self::defineTestDataDir(true);
+        self::defineTestDataDir(self::integrationTestDataDir, true);
         self::createTestFiles(true);
         self::overwriteModificationDatesTestDataDir();
         self::buildTestDB();
@@ -42,9 +41,9 @@ class TestEnvironment {
 
       if (self::$testMode == 'prepare') {
         // this is called once before the api tests (dredd)
-        self::setUpVirtualFilesystem();
+        self::defineTestDataDir(self::apiTestDataDir, true);
         self::createTestFiles(false);
-        self::overwriteModificationDatesVfs();
+        self::overwriteModificationDatesTestDataDir();
         self::buildTestDB();
         self::createTestData();
       }
@@ -54,10 +53,11 @@ class TestEnvironment {
         SystemConfig::$bruteForceProtection_sessions = [];
         SystemConfig::$server_key = 'Secret';
 
-        // api tests can use vfs for more speed
-        self::setUpVirtualFilesystem();
+        // every api call starts from the same files; a real directory (not vfs), so path
+        // resolution like realpath behaves as in production
+        self::defineTestDataDir(self::apiTestDataDir, true);
         self::createTestFiles(false);
-        self::overwriteModificationDatesVfs();
+        self::overwriteModificationDatesTestDataDir();
         // in api-tests every call is atomic and the test db gets restored afterwards
         // the test db must be set up before with $testMode == 'prepare'
         $initDAO = new InitDAO();
@@ -71,14 +71,6 @@ class TestEnvironment {
 
   public static function makeRandomStatic(): void {
     srand(1);
-  }
-
-  private static function setUpVirtualFilesystem(): void {
-    $vfs = vfsStream::setup('root', 0777);
-    vfsStream::newDirectory('data', 0777)->at($vfs);
-    vfsStream::newDirectory('data/ws_1', 0777)->at($vfs);
-
-    define('DATA_DIR', vfsStream::url('root/data'));
   }
 
   private static function createTestFiles(bool $includeSystemTestFiles): void {
@@ -118,47 +110,12 @@ class TestEnvironment {
     $initDAO->importScanImage(1, 'sample_scanned_image.png');
   }
 
-  public static function overwriteModificationDatesVfs(vfsStreamContent $dir = null): void {
-    if (!$dir) {
-      $dir = vfsStreamWrapper::getRoot()->getChild('data');
-    }
-    $dir->lastModified(TestEnvironment::staticDate);
-    foreach ($dir->getChildren() as $child) {
-      $child->lastModified(TestEnvironment::staticDate);
-      if (is_dir($child->url())) {
-        TestEnvironment::overwriteModificationDatesVfs($child);
-      }
-    }
-  }
-
+  // full.sql is the complete, hand-maintained schema, so the test DB is just a plain re-run of it.
+  // It used to be a generated cache of base.sql + all patches, which had to be rebuilt when it went stale.
   static function buildTestDB(): void {
     $initDAO = new InitDAO();
-    $nextPatchPath = ROOT_DIR . '/scripts/database/patches.d/next.sql';
-    $fullSchemePath = ROOT_DIR . '/scripts/database/full.sql';
-    $patchFileChanged = (file_exists($nextPatchPath) and (filemtime($nextPatchPath) > filemtime($fullSchemePath)));
-
-    if (!file_exists($fullSchemePath) or $patchFileChanged) {
-      TestEnvironment::updateDataBaseScheme();
-      return;
-    }
     $initDAO->clearDB();
     $initDAO->runFile(ROOT_DIR . '/scripts/database/full.sql');
-  }
-
-  private static function updateDataBaseScheme(): void {
-    $initDAO = new InitDAO();
-    $initDAO->clearDB();
-    $initDAO->runFile(ROOT_DIR . "/scripts/database/base.sql");
-    $report = $initDAO->installPatches(ROOT_DIR . "/scripts/database/patches.d", false);
-    if (count($report['errors'])) {
-      $errors = [];
-      foreach ($report['errors'] as $patch => $error) {
-        $errors[] = "Patch $patch failed with: `$error`";
-      }
-      throw new Exception(implode("; ", $errors));
-    }
-
-    $initDAO->writeFullSchema(ROOT_DIR . '/scripts/database/full.sql');
   }
 
   private static function rollback(): void {
@@ -175,8 +132,8 @@ class TestEnvironment {
     throw new RuntimeException("Could not create environment: " . $exception->getMessage());
   }
 
-  private static function defineTestDataDir(bool $shouldReset): void {
-    define('DATA_DIR', ROOT_DIR . '/data-TEST');
+  private static function defineTestDataDir(string $dirName, bool $shouldReset): void {
+    define('DATA_DIR', ROOT_DIR . '/' . $dirName);
     if (!$shouldReset) {
       return;
     }
@@ -185,7 +142,6 @@ class TestEnvironment {
   }
 
   private static function overwriteModificationDatesTestDataDir(?string $dir = DATA_DIR): void {
-    touch($dir, TestEnvironment::staticDate);
     foreach (new DirectoryIterator($dir) as $child) {
       if ($child->isDot() or $child->isLink()) {
         continue;

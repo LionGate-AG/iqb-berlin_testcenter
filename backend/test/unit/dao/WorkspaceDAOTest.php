@@ -3,11 +3,15 @@
 
 use PHPUnit\Framework\TestCase;
 
+require_once "test/unit/test-helper/AssertsArraysIgnoringOrder.php";
+
 /**
  * @runTestsInSeparateProcesses
  * @preserveGlobalState disabled
  */
 class WorkspaceDAOTest extends TestCase {
+  use AssertsArraysIgnoringOrder;
+
   private WorkspaceDAO $dbc;
 
   function setUp(): void {
@@ -29,7 +33,8 @@ class WorkspaceDAOTest extends TestCase {
       ]
     ];
     $result = $this->dbc->getGlobalIds();
-    $this->assertEquals($expectation, $result);
+    // getGlobalIds() queries without `order by`, so neither the ids nor the keys have a fixed order
+    $this->assertSameIgnoringOrder($expectation, $result);
   }
 
   public function test_getWorkspaceName(): void {
@@ -40,7 +45,7 @@ class WorkspaceDAOTest extends TestCase {
 
   // TODO make a test for adding
   public function test_storeFileMeta_overwrite(): void {
-    SystemConfig::$enable_xmlschema_validation = true;
+    SystemConfig::$xmlSchema_validation = true;
     $file = XMLFileBooklet::fromString('<Booklet><Metadata><Id>BOOKLET.SAMPLE-1</Id><Label>l</Label></Metadata><Units><Unit label="l" id="x_unit" /></Units></Booklet>', 'Booklet.xml');
 
     $this->dbc->storeFile($file);
@@ -60,9 +65,9 @@ class WorkspaceDAOTest extends TestCase {
         'verona_module_type' => null,
         'verona_version' => null,
         'verona_module_id' => null,
-        'is_valid' => 0,
+        'is_valid' => false,
         'validation_report' => 'ignore',
-        'modification_ts' => '2023-01-16 09:00:00',
+        'modification_ts' => '2023-01-16 08:00:00+00',
         'size' => 195,
         'context_data' => null
       ],
@@ -80,9 +85,9 @@ class WorkspaceDAOTest extends TestCase {
         'verona_module_type' => '',
         'verona_version' => '',
         'verona_module_id' => '',
-        'is_valid' => 0,
+        'is_valid' => false,
         'validation_report' => 'ignore',
-        'modification_ts' => '1970-01-01 01:00:01',
+        'modification_ts' => '1970-01-01 00:00:01+00',
         'size' => 0,
         'context_data' => 'a:0:{}'
       ]

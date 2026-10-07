@@ -98,6 +98,46 @@ class Workspace {
     return $this->workspacePath;
   }
 
+  /**
+   * The only sanctioned way to turn request input (type, file name) into a workspace
+   * file path. Returns null if the type is unknown or the path escapes its sub-folder.
+   */
+  public function getFilePath(string $type, string $fileName): ?string {
+    if (!in_array($type, self::subFolders)) {
+      return null;
+    }
+
+    $path = Folder::getContainedRealPath($this->workspacePath . '/' . $type, $fileName);
+
+    return ($path !== null and is_file($path)) ? $path : null;
+  }
+
+  /**
+   * Object-store counterpart of getFilePath(): the storage key for request input (type, file name), or
+   * null if the type is unknown or the name could leave its sub-folder. Object keys are plain strings,
+   * so there is no realpath() to resolve `..` -- such names are rejected instead. String-only, no I/O,
+   * so it can run before any cache lookup; whether the object exists is the caller's check.
+   */
+  public function getFileKey(string $type, string $fileName): ?string {
+    if (!in_array($type, self::subFolders)) {
+      return null;
+    }
+
+    if (($fileName === '') or str_starts_with($fileName, '/') or str_contains($fileName, '\\')
+      or str_contains($fileName, "\0")) {
+      return null;
+    }
+
+    foreach (explode('/', $fileName) as $segment) {
+      if (($segment === '') or ($segment === '.') or ($segment === '..')) {
+        return null;
+      }
+    }
+
+    return "ws_{$this->workspaceId}/$type/$fileName";
+  }
+
+
   public function deleteFiles(array $filesToDelete): FileDeletionReport {
     $deletionReport = new FileDeletionReport();
 
@@ -183,7 +223,7 @@ class Workspace {
       $this->workspaceDAO->deleteFile($file);
 
     } catch (Exception $e) {
-      echo $e->getMessage();
+      error_log($e->getMessage());
       return false;
     }
     return true;
@@ -447,18 +487,47 @@ class Workspace {
     rmdir($this->workspacePath);
   }
 
+  /**
+   * Reads the workspace folder and brings the database in line with it.
+   *
+   * @return array{
+   *   valid: array<string, int>,
+   *   invalid: int,
+   *   logins: array{added: int, deleted: int},
+   *   reports: array<string, string[]>,
+   *   pruning_skipped: bool
+   * }
+   */
   // TODO unit-test
   public function storeAllFiles(): array {
     $workspaceCache = new WorkspaceCache($this);
     $workspaceCache->loadFiles();
 
+    // One transaction for the whole workspace: left to itself `storeFile` commits per file, and every commit
+    // is a disk flush. It also makes the pass atomic.
+    return $this->workspaceDAO->transactional(
+      fn(): array => $this->storeAllFilesInTransaction($workspaceCache)
+    );
+  }
+
+  /**
+   * @return array{
+   *   valid: array<string, int>,
+   *   invalid: int,
+   *   logins: array{added: int, deleted: int},
+   *   reports: array<string, string[]>,
+   *   pruning_skipped: bool
+   * }
+   */
+  private function storeAllFilesInTransaction(WorkspaceCache $workspaceCache): array {
     $typeStats = array_fill_keys(Workspace::subFolders, 0);
     $loginStats = [
       'added' => 0
     ];
     $invalidCount = 0;
 
-    $loginStats['deleted'] = $this->removeVanishedFilesFromDB($workspaceCache);
+    $pruningSkipped = $this->isSuspectedIncompleteRestore($workspaceCache);
+    $loginStats['deleted'] = $pruningSkipped ? 0 : $this->removeVanishedFilesFromDB($workspaceCache);
 
     $workspaceCache->validate();
 
@@ -477,7 +546,7 @@ class Workspace {
     }
 
     foreach ($workspaceCache->getFiles(true) as $file) {
-      $stats = $this->storeFileMeta($file);
+      $stats = $this->storeFileMeta($file, $workspaceCache);
 
       $loginStats['deleted'] += $stats['logins_deleted'];
       $loginStats['added'] += $stats['logins_added'];
@@ -489,8 +558,27 @@ class Workspace {
       'valid' => $typeStats,
       'invalid' => $invalidCount,
       'logins' => $loginStats,
-      'reports' => $reports
+      'reports' => $reports,
+      'pruning_skipped' => $pruningSkipped
     ];
+  }
+
+  // An empty workspace folder next to a database that still knows files for it is almost always a lost data volume or
+  // a restore that only got as far as the database - not somebody deleting all content at once. Pruning would then
+  // delete the file rows and the logins derived from the Testtakers XML, which only the backup still holds.
+  // The check is deliberately narrow: emptying a workspace by hand still prunes as soon as one file remains.
+  private function isSuspectedIncompleteRestore(WorkspaceCache $workspaceCache): bool {
+    if (count($workspaceCache->getFiles(true))) {
+      return false;
+    }
+
+    foreach ($this->workspaceDAO->getAllFiles() as $fileSet) {
+      if (count($fileSet)) {
+        return true;
+      }
+    }
+
+    return false;
   }
 
   private function removeVanishedFilesFromDB(WorkspaceCache $workspaceCache): int {
@@ -516,17 +604,10 @@ class Workspace {
   }
 
   // TODO unit-test
-  private function storeFileMeta(File $file): ?array {
+  private function storeFileMeta(File $file, ?WorkspaceCache $workspaceCache = null): array {
     $stats = [
       'logins_deleted' => 0,
-      'logins_added' => 0,
-      'resource_packages_installed' => 0,
-      'attachments_noted' => 0,
-      'resolved_relations' => 0,
-      'relations_resolved' => 0,
-      'relations_unresolved' => 0,
-      'asset_assignments_deleted' => 0,
-      'asset_assignments_added' => 0
+      'logins_added' => 0
     ];
 
     if (!$file->isValid()) {
@@ -534,9 +615,7 @@ class Workspace {
     }
 
     if ($file::canBeRelationSubject) {
-      list($relationsUnresolved) = $this->workspaceDAO->storeRelations($file);
-      $stats['relations_resolved'] = count($file->getRelations()) - count($relationsUnresolved);
-      $stats['relations_unresolved'] = count($relationsUnresolved);
+      $this->workspaceDAO->storeRelations($file);
     }
 
     if (is_a($file, XMLFileTesttakers::class)) {
@@ -544,36 +623,32 @@ class Workspace {
       $stats['logins_deleted'] = $deleted;
       $stats['logins_added'] = $added;
 
-      $assetAssignmentStats = $this->workspaceDAO->updateAssetAssignmentSource(
-        $file->getName(),
-        $file->getAssetAssignments()
-      );
-      $stats['asset_assignments_deleted'] = $assetAssignmentStats['deleted'];
-      $stats['asset_assignments_added'] = $assetAssignmentStats['added'];
+      $this->workspaceDAO->updateAssetAssignmentSource($file->getName(), $file->getAssetAssignments());
     }
 
     if (is_a($file, ResourceFile::class) and $file->isPackage()) {
       $file->installPackage();
-      $stats['resource_packages_installed'] = 1;
     }
 
     if (is_a($file, XMLFileBooklet::class)) {
-      $requestedAttachments = $this->getRequestedAttachments($file);
-      $this->workspaceDAO->updateUnitDefsAttachments($file->getId(), $requestedAttachments);
-      $stats['attachments_noted'] = count($requestedAttachments);
+      $this->workspaceDAO->updateUnitDefsAttachments(
+        $file->getId(),
+        $this->getRequestedAttachments($file, $workspaceCache)
+      );
     }
 
     return $stats;
   }
 
-  public function getRequestedAttachments(XMLFileBooklet $booklet): array {
+  /** A cache holding the booklet's units answers from memory; without one every unit is read from the database. */
+  public function getRequestedAttachments(XMLFileBooklet $booklet, ?WorkspaceCache $workspaceCache = null): array {
     if (!$booklet->isValid()) {
       return [];
     }
 
     $requestedAttachments = [];
     foreach ($booklet->getUnitIds() as $uniId) {
-      $unit = $this->getFileById('Unit', $uniId);
+      $unit = $workspaceCache?->getUnit($uniId) ?? $this->getFileById('Unit', $uniId);
       /* @var $unit XMLFileUnit */
       $requestedAttachments = array_merge($requestedAttachments, $unit->getRequestedAttachments());
     }

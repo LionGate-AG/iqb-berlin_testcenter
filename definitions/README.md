@@ -10,9 +10,11 @@ organisation on GitHub and are accessible via stable permalinks.
 | Schema | Repository | Permalink |
 |---|---|---|
 | Booklet | [testcenter-booklet-xml](https://github.com/iqb-specifications/testcenter-booklet-xml) | `https://w3id.org/iqb/spec/testcenter-booklet-xml/{version}` |
-| Testtakers | [testcenter-testtakers-xml](https://github.com/iqb-specifications/testcenter-testtakers-xml) | `https://w3id.org/iqb/spec/testcenter-testtakers-xml/{version}` |
-| Unit | [testcenter-unit-xml](https://github.com/iqb-specifications/testcenter-unit-xml) | `https://w3id.org/iqb/spec/testcenter-unit-xml/{version}` |
+| Testtakers | [testcenter-testtaker-xml](https://github.com/iqb-specifications/testcenter-testtaker-xml) | `https://w3id.org/iqb/spec/testcenter-testtaker-xml/{version}` |
+| Unit | [unit-xml](https://github.com/iqb-specifications/unit-xml) | `https://w3id.org/iqb/spec/unit-xml/{version}` |
 | SysCheck | [testcenter-syscheck-xml](https://github.com/iqb-specifications/testcenter-syscheck-xml) | `https://w3id.org/iqb/spec/testcenter-syscheck-xml/{version}` |
+
+**The major versions the Testcenter supports for each schema are defined in [compatibility.json](compatibility.json).**
 
 ## Usage
 
@@ -21,10 +23,3 @@ Reference the desired schema version in your XML files (example for booklet-xml)
 <Booklet xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:noNamespaceSchemaLocation="https://w3id.org/iqb/spec/testcenter-booklet-xml/18.0">
 ```
-
-# JSON-Files
-
-The accompanying JSON-files which define run-modes, booklet-configurations
-and such may be included into the XSD schemas in the future. The XSD schemas
-are maintained in dedicated repositories under
-[iqb-specifications](https://github.com/iqb-specifications).

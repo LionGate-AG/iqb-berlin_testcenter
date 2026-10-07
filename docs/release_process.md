@@ -1,5 +1,7 @@
 <!-- This file outlines the steps necessary for creating a new release -->
 
+# Release 
+
 - make docs-user
 - make create-interfaces
 - Optionally update schema references in `sampledata` files. This is only necessary if the sample files actually use new
@@ -8,9 +10,26 @@
 - Move content of `next.sql` file with release name, e.g. `17.5.0.sql`. Delete `next.sql`!
 - Move content of `next.sh` file with release name, e.g. `17.5.0.sh`. Delete `next.sh`! Do not add pre-release tags like "-beta" to the filename.
 - Make sure `CHANGELOG.md` is up to date.
+- For a new minor version, add it at the top of `docs/site/public/versions.json`. Remove versions whose docs are no
+  longer offered.
 - Update versions in scripts/helm/testcenter/Chart.yml
   - appVersion AND (chart) version need to be raised.
 - Update TESTCENTER_VERSION and TESTCENTER_CHART_VERSION in scrips/helm/helm-install-tc.sh
 - Push helm changes TODO
 <!-- helm push () -->
 <!--   helm package testcenter && helm push testcenter-$(CHART_VERSION).tgz oci://registry-1.docker.io/iqbberlin && rm testcenter-$(CHART_VERSION).tgz -->
+
+install.sh ans release anhaengen
+
+# Xml validation
+
+1. data/schemas: add new XSD version, add changes
+2. prepare changes in the XML
+3. specify the new XSD version number in the modified XML and verify that it validates
+4. integrate the changes into the testcenter
+5. test the new functionality 
+6. register the new supported version in `definitions/compatibility.json`
+7. release the new testcenter version
+8. commit XSD changes to the spec-repository and release the new version; also note the required testcenter version in the release notes.
+
+

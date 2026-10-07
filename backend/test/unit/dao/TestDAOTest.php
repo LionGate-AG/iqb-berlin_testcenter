@@ -53,7 +53,7 @@ class TestDAOTest extends TestCase {
     $expectedLog = [
       [
         'logentry' => 'sample log entry',
-        'timestamp' => 1597903000
+        'timestamp' => 1597903000000
       ],
       [
         'logentry' => $logKey . ' : ' . json_encode($logContent),
@@ -281,6 +281,13 @@ class TestDAOTest extends TestCase {
     $expected = [];
     $result = $this->dbc->getCommands(1, 3);
     $this->assertEquals($expected, $result);
+
+    // command 1 was sent to test 1 and test 2, so the id alone matches two rows with different timestamps
+    $expected = [
+      new Command(3, 'COMMAND_D', 1597904000, 'param1', 'param2')
+    ];
+    $result = $this->dbc->getCommands(1, 1);
+    $this->assertEquals($expected, $result);
   }
 
   function test_getDataParts() {
@@ -305,7 +312,7 @@ class TestDAOTest extends TestCase {
         'added' => '{"stuff": "added"}'
       ],
       'the-response-type',
-      123456789123
+      1597903001000
     );
     $expected = [
       'dataParts' => [
@@ -324,7 +331,7 @@ class TestDAOTest extends TestCase {
       'UNIT.SAMPLE',
       [],
       'the-response-type',
-      123456789124
+      1597903002000
     );
     $expectedEmptyUpdate = [
       'dataParts' => [
@@ -345,7 +352,7 @@ class TestDAOTest extends TestCase {
         'other' => '{"other": "new_overwrite"}'
       ],
       'new-response-type',
-      123456789125
+      1597903003000
     );
     $expectedOverwrite = [
       'dataParts' => [
@@ -367,7 +374,7 @@ class TestDAOTest extends TestCase {
         'other' => '{"other": "completely_new"}'
       ],
       'new-response-type',
-      123456789126
+      1597903004000
     );
     $expectedOverwrite = [
       'dataParts' => [

@@ -3,19 +3,13 @@ import {
   loginSuperAdmin,
   openWorkspace,
   probeBackendApi,
-  resetBackendData,
+  resetBackendTestData,
   visitLoginPage
 } from '../utils';
 
-// TODO check presentation-complete hier wieder aktivieren (skip entfernen), wenn stabil headless läuft
-/*
-Zur Zeit ist eine restriktive Validierung abgeschaltet und das Testcenter verhält sich flexibel bei nicht konformen Testdateien.
-Daher ist dieser Test erst einmal ausgeschaltet. Sobald eine Validierung wieder eingeschaltet ist, kann der Test wieder aktiviert werden.
-*/
-
-describe.skip('Check Testtakers Content', () => {
+describe('Check Testtakers Content', () => {
   before(() => {
-    resetBackendData();
+    resetBackendTestData();
     probeBackendApi();
   });
   beforeEach(() => {

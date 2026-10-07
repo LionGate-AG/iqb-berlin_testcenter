@@ -25,6 +25,11 @@ export class TesteeService implements OnModuleInit {
         .then(() => this.removeTestee(disconnected))
         .catch(e => this.logger.error(e.message));
     });
+    // Upstream 12ff306ec: a registration whose socket never connected is dropped without reporting a
+    // connection loss to the backend (there never was a connection).
+    this.websocketGateway.getTokenExpiryObservable().subscribe((expired: string) => {
+      this.removeTestee(expired).catch(e => this.logger.error(e.message));
+    });
   }
 
   private readonly logger = new Logger(TesteeService.name);
@@ -41,6 +46,8 @@ export class TesteeService implements OnModuleInit {
   async addTestee(testee: Testee): Promise<void> {
     await this.redisService.sadd(KEY.testeeTestId(testee.testId), testee.token);
     await this.redisService.hset(KEY.testees, testee.token, testee);
+    // Last: a socket may connect as soon as its token is allowed, and must then find the testee in place.
+    await this.websocketGateway.allowToken(testee.token);
   }
 
   async removeTestee(testeeToken: string): Promise<void> {
@@ -61,6 +68,12 @@ export class TesteeService implements OnModuleInit {
   async notifyDisconnection(testeeToken: string): Promise<void> {
     const testee = await this.redisService.hget<Testee>(KEY.testees, testeeToken);
     if (!testee || !testee.disconnectNotificationUri) {
+      return;
+    }
+    // Upstream 285ebe8ac: the heartbeat may detect a dead socket only after the test has reconnected with
+    // another token -- possibly on another pod, so liveness is read from Redis, not from the local map.
+    if (await this.isTestConnectedElsewhere(testee)) {
+      this.logger.log(`test of ${testeeToken} is still connected, not sending connection-lost signal`);
       return;
     }
 
@@ -87,6 +100,16 @@ export class TesteeService implements OnModuleInit {
         await sleep(2 ** attempt * 200); // exponential backoff: 200ms, 400ms, ...
       }
     }
+  }
+
+  private async isTestConnectedElsewhere(testee: Testee): Promise<boolean> {
+    const otherTokens = (await this.redisService.smembers(KEY.testeeTestId(testee.testId)))
+      .filter(token => token !== testee.token);
+    if (otherTokens.length === 0) {
+      return false;
+    }
+    const { alive } = await this.redisService.partitionByAlive(otherTokens);
+    return alive.length > 0;
   }
 
   async broadcastCommandToTestees(command: Command, testIds: number[]): Promise<void> {

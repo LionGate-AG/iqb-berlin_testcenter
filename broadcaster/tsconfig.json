@@ -1,15 +1,12 @@
 {
   "compilerOptions": {
-    "baseUrl": "./",
     "strict": true,
     "declaration": true,
     "emitDecoratorMetadata": true,
     "experimentalDecorators": true,
     "incremental": true,
     "module": "commonjs",
-    "moduleResolution": "node",
-    "ignoreDeprecations": "5.0",
-    "rootDir": "../",
+    "moduleResolution": "bundler",
     "outDir": "./dist",
     "removeComments": true,
     "resolveJsonModule": true,
@@ -20,6 +17,8 @@
         "../common/src/*"
       ]
     },
+    // Files are pulled in from outside this directory via the "testcenter-common/*" path
+    "rootDir": "..",
     "types": ["jest"]
   },
   "exclude": ["node_modules", "dist", "**/*spec.ts"]

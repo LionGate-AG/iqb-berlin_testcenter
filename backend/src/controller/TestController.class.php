@@ -76,7 +76,7 @@ class TestController extends Controller {
     $bookletFile = $workspace->getFileById('Booklet', $test->bookletFileId);
     $testName = TestName::fromString($test->name);
 
-    // TODO check for Mode::hasCapability('monitorable'))
+    // TODO check for Mode::hasCapability(ModeCapability::MONITORABLE)
 
     if (!$test->running) {
       $personSession = self::sessionDAO()->getPersonSessionByToken($authToken->getToken());
@@ -153,38 +153,42 @@ class TestController extends Controller {
       throw new HttpForbiddenException($request, "Access to file `$path` not allowed with group-token.");
     }
 
+    [$type, $fileName] = array_pad(explode('/', $path, 2), 2, '');
     $workspace = new Workspace($workspaceId);
-    $resourceFile = $workspace->getWorkspacePath() . '/' . $path;
 
     if (Storage::isObjectStore()) {
+      // The same containment rule as the filesystem branch below (getFileKey mirrors getFilePath),
+      // checked before the URL cache, so a cached URL only ever exists for a validated path.
+      $key = $workspace->getFileKey($type, $fileName);
+      if ($key === null) {
+        throw new HttpNotFoundException($request, "File not found: `$path`");
+      }
       // Signing is local and cheap; exists() is a ~50ms blocking S3 round trip
       // that holds this worker. Every test taker requests the same few files, so
       // on a hit we skip both. See CacheService::getPresignedUrl().
-      $cachedUrl = CacheService::getPresignedUrl($workspaceId, $path);
-      if ($cachedUrl !== null) {
-        return $response->withStatus(302)->withHeader('Location', $cachedUrl);
+      $url = CacheService::getPresignedUrl($workspaceId, $path);
+      if ($url === null) {
+        if (!Storage::driver()->exists($key)) {
+          throw new HttpNotFoundException($request, "File not found: `$path`");
+        }
+        $url = Storage::driver()->presignGet($key, SystemConfig::$storage_presignTtl);
+        CacheService::storePresignedUrl($workspaceId, $path, $url);
       }
-      $logical = Storage::toLogical($resourceFile);
-      if ($logical === null or !Storage::driver()->exists($logical)) {
-        throw new HttpNotFoundException($request, "File not found: `$path`");
-      }
-      $url = Storage::driver()->presignGet($logical, SystemConfig::$storage_presignTtl);
-      CacheService::storePresignedUrl($workspaceId, $path, $url);
-      return $response->withStatus(302)->withHeader('Location', $url);
+      // authenticated resource: keep shared/edge caches from storing the redirect (as FileResponse does)
+      return $response
+        ->withStatus(302)
+        ->withHeader('Location', $url)
+        ->withHeader('Cache-Control', 'private');
     }
 
-    $res = fopen($resourceFile, 'rb');
-    if (!$res) {
+    $filePath = $workspace->getFilePath($type, $fileName);
+    if ($filePath === null) {
+
       throw new HttpNotFoundException($request, "File not found: `$path`");
     }
 
-    header('Content-type: ' . FileExt::getMimeType($resourceFile));
-    header('Content-Length: ' . filesize($resourceFile));
-    header('X-Source: backend');
-    fpassthru($res);
-    http_response_code(200);
-    fclose($res);
-    die();
+    return FileResponse::stream($response, $filePath)
+      ->withHeader('X-Source', 'backend');
   }
 
   public static function putUnitReview(Request $request, Response $response): Response {
@@ -564,7 +568,6 @@ class TestController extends Controller {
   }
 
   public static function getCommands(Request $request, Response $response): Response {
-    // TODO do we have to check access to test?
     $testId = (int) $request->getAttribute('test_id');
     $lastCommandId = RequestHelper::getFieldWithDefault($request, 'lastCommandId', null);
 
@@ -589,9 +592,8 @@ class TestController extends Controller {
     // statement. The test-state cache holds the same laststate, so when it says
     // "not LOST" the join is skipped. A miss (or another person's test) falls
     // through to the query exactly as before.
-    /* @var $authToken AuthToken */
-    $authToken = $request->getAttribute('AuthToken');
-    $cachedTest = CacheService::getOwnedTestRow($testId, $authToken->getId());
+    
+    $cachedTest = $request->getAttribute('OwnedTest');
     $cachedState = $cachedTest ? JSON::decode($cachedTest['laststate'], true) : null;
     if (($cachedState === null) or (($cachedState['CONNECTION'] ?? null) == 'LOST')) {
       $testSession = self::testDAO()->getTestSession($testId);
@@ -618,7 +620,6 @@ class TestController extends Controller {
 
 
   public static function patchCommandExecuted(Request $request, Response $response): Response {
-    // TODO to we have to check access to test?
     $testId = (int) $request->getAttribute('test_id');
     $commandId = (int) $request->getAttribute('command_id');
 

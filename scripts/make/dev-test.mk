@@ -2,6 +2,9 @@ TC_BASE_DIR := $(shell git rev-parse --show-toplevel)
 MAGO_VERSION := ${shell jq -r '."packages-dev"[] | select(.name == "carthage-software/mago") | .version' $(TC_BASE_DIR)/backend/composer.lock}
 target ?= .
 args ?= --help
+# the leading ':' keeps PHP's default conf.d; the unit-test ini is loaded after it, and the
+# environment variable also reaches the child processes PHPUnit and amphp start
+UNIT_TEST_PHP_INI := --env PHP_INI_SCAN_DIR=:/var/www/testcenter/backend/test/unit/php-ini
 
 test-backend-static-analysis:
 	docker run --rm\
@@ -16,7 +19,7 @@ test-backend-unit:
 			--env-file .env.dev\
 			--file docker-compose.yml\
 			--file docker-compose.dev.yml\
-		run --rm --entrypoint "" backend\
+		run --rm --entrypoint "" $(UNIT_TEST_PHP_INI) backend\
 			php -dxdebug.mode='debug' /var/www/testcenter/backend/vendor/phpunit/phpunit/phpunit\
 						--bootstrap /var/www/testcenter/backend/test/unit/bootstrap.php\
 						--configuration /var/www/testcenter/backend/phpunit.xml\
@@ -28,7 +31,7 @@ test-backend-unit-coverage:
 			--env-file .env.dev\
 			--file docker-compose.yml\
 			--file docker-compose.dev.yml\
-		run --rm --entrypoint "" backend\
+		run --rm --entrypoint "" $(UNIT_TEST_PHP_INI) backend\
 			php -dxdebug.mode='coverage' /var/www/testcenter/backend/vendor/phpunit/phpunit/phpunit\
 					--bootstrap /var/www/testcenter/backend/test/unit/bootstrap.php\
 					--configuration /var/www/testcenter/backend/phpunit.xml\
@@ -42,12 +45,18 @@ test-backend-api:
 			--file docker-compose.yml\
 			--file docker-compose.dev.yml\
 			--file test/docker-compose.api-test.yml\
+		run --rm --entrypoint /initialize_only.sh backend &&\
+	docker compose\
+			--env-file .env.dev\
+			--file docker-compose.yml\
+			--file docker-compose.dev.yml\
+			--file test/docker-compose.api-test.yml\
 		run --rm task-runner-backend\
 			node_modules/.bin/gulp --gulpfile=./test/api/test.js runDreddTest
 
 # Performs a tests suite from the initialization tests.
 # Param test - (All files in backend/test/initialization/tests for are available tests.)
-# Example: `make test-backend-initialization test=general/db-versions`
+# Example: `make test-backend-initialization test=general/vanilla-installation`
 test-backend-initialization:
 	cd $(TC_BASE_DIR) &&\
 	TEST_NAME=$(test) \
@@ -60,12 +69,13 @@ test-backend-initialization:
 			--abort-on-container-exit\
 			--exit-code-from=initialization-test-backend
 
-# Performs some tests around the initialization script like upgrading the db-schema.
+# Performs the general tests around fresh installation, PostgreSQL patches and re-initialization.
 test-backend-initialization-general:
 	cd $(TC_BASE_DIR) && make stop # TODO this should be able to run while the testcenter runs ins dev-mode
-	cd $(TC_BASE_DIR) && make test-backend-initialization test=general/db-versions
 	cd $(TC_BASE_DIR) && make test-backend-initialization test=general/vanilla-installation
+	cd $(TC_BASE_DIR) && make test-backend-initialization test=general/no-sample-data
 	cd $(TC_BASE_DIR) && make test-backend-initialization test=general/no-db-but-files
+	cd $(TC_BASE_DIR) && make test-backend-initialization test=general/db-but-no-files
 	cd $(TC_BASE_DIR) && make test-backend-initialization test=general/install-db-patches
 	cd $(TC_BASE_DIR) && make test-backend-initialization test=general/re-initialize
 
@@ -109,11 +119,18 @@ test-file-server-api:
 	@docker image rm testcenter-task-runner-file-server
 
 # Performs some e2e tests with CyPress against real backend and services
-# Param: (optional) spec - specific spec to run (example: spec=Test-Controller/hot-return), omit parameter for all.
+# Param: (optional) spec - comma-separated Cypress spec paths relative to e2e; omit for all.
+# Example: spec='src/e2e/Group-Monitor/**/*,src/e2e/Sys-Check/**/*'
 test-system-headless:
 	-cd $(TC_BASE_DIR) &&\
 	make down &&\
-	SPEC=$(spec) \
+	docker compose\
+			--env-file .env.dev\
+			--file docker-compose.yml\
+			--file docker-compose.dev.yml\
+			--file e2e/docker-compose.system-test-headless.yml\
+		run --rm --entrypoint /initialize_only.sh backend &&\
+	SPEC='$(spec)' \
 	docker compose\
 			--env-file .env.dev\
 			--file docker-compose.yml\
@@ -137,8 +154,14 @@ test-system:
 			--env-file .env.dev\
 			--file docker-compose.yml\
 			--file docker-compose.dev.yml\
-		up -d &&\
-	bash e2e/run-e2e.sh
+		run --rm --entrypoint /initialize_only.sh backend &&\
+	docker compose\
+			--env-file .env.dev\
+			--file docker-compose.yml\
+			--file docker-compose.dev.yml\
+		up --detach --wait &&\
+	cd e2e &&\
+	npm run test-system-ui
 	@cd $(TC_BASE_DIR) &&\
 	docker compose --progress quiet\
 			--env-file .env.dev\

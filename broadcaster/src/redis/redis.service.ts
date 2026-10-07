@@ -210,6 +210,21 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     return { alive, dead };
   }
 
+  // ---- WebSocket registrations (see KEY.wsRegistrations) ----
+  async registerToken(token: string): Promise<void> {
+    await this.pub.zadd(KEY.wsRegistrations, Date.now(), token);
+  }
+
+  /** Remove a registration; true if there was one. Atomic, so concurrent takers get one `true` between them. */
+  async takeTokenRegistration(token: string): Promise<boolean> {
+    return (await this.pub.zrem(KEY.wsRegistrations, token)) === 1;
+  }
+
+  /** Up to `limit` tokens registered at or before `cutoffMs`, oldest first. */
+  async getTokenRegistrationsBefore(cutoffMs: number, limit: number): Promise<string[]> {
+    return this.pub.zrangebyscore(KEY.wsRegistrations, '-inf', cutoffMs, 'LIMIT', 0, limit);
+  }
+
   // ---- atomic session merge ----
   async mergeSessionHash(
     group: string,

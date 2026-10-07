@@ -22,10 +22,12 @@ const makeWs = (): WebSocket => ({
   send: jest.fn(), close: jest.fn(), on: jest.fn(), terminate: jest.fn(), readyState: 1
 } as unknown as WebSocket);
 
-// Connect a live socket for a token on this pod (also marks it alive in Redis).
-const connect = (token: string): WebSocket => {
+// Connect a live socket for a token on this pod. Once its registration check (one Redis round trip) has
+// finished, it is also marked alive in Redis.
+const connect = async (token: string): Promise<WebSocket> => {
   const ws = makeWs();
   websocketGateway.handleConnection(ws, { url: `x/ws?token=${token}` } as IncomingMessage);
+  await new Promise(resolve => { setImmediate(resolve); });
   return ws;
 };
 
@@ -48,11 +50,14 @@ describe('TestSessionService: add and remove monitors', () => {
   });
 
   it('should add monitors (registration written to Redis)', async () => {
+    const spyAllowToken = jest.spyOn(websocketGateway, 'allowToken');
     await testSessionService.addMonitor(mockMonitor1);
     expect(await redis.smembers(KEY.monitorGroups('Gruppe1'))).toContain('monitorToken1');
     expect(await redis.smembers(KEY.monitorGroups('TestakerGroup1'))).toContain('monitorToken1');
     expect(await redis.smembers(KEY.monitorGroups('Gruppe2'))).toContain('monitorToken1');
     expect(await redis.hget<Monitor>(KEY.monitors, 'monitorToken1')).toStrictEqual(mockMonitor1);
+    expect(spyAllowToken).toHaveBeenCalledWith('monitorToken1');
+
   });
 
   it('should remove monitor (resulting in empty monitor list)', async () => {
@@ -65,6 +70,15 @@ describe('TestSessionService: add and remove monitors', () => {
     expect(await redis.smembers(KEY.monitorGroups('TestakerGroup1'))).toStrictEqual([]);
     expect(await redis.hget(KEY.monitors, 'monitorToken1')).toBeNull();
     expect(spyDisconnectClient).toHaveBeenCalledWith('monitorToken1');
+  });
+
+  it('should remove a monitor whose token expired', async () => {
+    await testSessionService.addMonitor(mockMonitor1);
+    websocketGateway['tokenExpired$'].next(mockMonitor1.token);
+    await new Promise(resolve => { setImmediate(resolve); });
+
+    expect(await testSessionService.getMonitors()).toStrictEqual([]);
+    expect(await redis.smembers(KEY.monitorGroups('Gruppe1'))).toStrictEqual([]);
   });
 
   it('should remove monitor (other monitor remains)', async () => {
@@ -201,8 +215,8 @@ describe('testSessionService sessionChanges', () => {
     await testSessionService.addMonitor(mockMonitor1);
     await testSessionService.addMonitor(mockMonitor3);
     // keep monitors alive so the lazy-eviction pass does not drop them mid-test
-    connect(mockMonitor1.token);
-    connect(mockMonitor3.token);
+    await connect(mockMonitor1.token);
+    await connect(mockMonitor3.token);
   });
 
   it('should skip changes for unmonitored groups', async () => {
@@ -211,7 +225,8 @@ describe('testSessionService sessionChanges', () => {
   });
 
   it('should create a session entry and deliver to the monitor socket', async () => {
-    const ws = connect('liveMonitorSocket'); // unrelated extra socket, should not receive
+    const ws = await connect('liveMonitorSocket'); // unrelated extra socket, should not receive
+
     expect(ws).toBeDefined();
     const monitorWs = (websocketGateway['clients'] as Map<string, WebSocket>).get(mockMonitor1.token)!;
     const spySend = jest.spyOn(monitorWs, 'send');

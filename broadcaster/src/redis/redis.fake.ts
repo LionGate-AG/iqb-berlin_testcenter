@@ -11,6 +11,7 @@ export class FakeRedisService {
   connections: string[] = [];
   handlers = new Map<string, (payload: any) => void>();
   published: { channel: string; payload: any }[] = [];
+  registrations = new Map<string, number>(); // ZSET ws-registrations: token -> registered at (ms)
 
   private hash(key: string): Map<string, string> {
     if (!this.hashes.has(key)) this.hashes.set(key, new Map());
@@ -87,6 +88,22 @@ export class FakeRedisService {
     const dead: string[] = [];
     tokens.forEach(t => (this.alive.has(t) ? alive : dead).push(t));
     return { alive, dead };
+  }
+
+  async registerToken(token: string): Promise<void> {
+    this.registrations.set(token, Date.now());
+  }
+
+  async takeTokenRegistration(token: string): Promise<boolean> {
+    return this.registrations.delete(token);
+  }
+
+  async getTokenRegistrationsBefore(cutoffMs: number, limit: number): Promise<string[]> {
+    return [...this.registrations.entries()]
+      .filter(([, registeredAt]) => registeredAt <= cutoffMs)
+      .sort((a, b) => a[1] - b[1])
+      .slice(0, limit)
+      .map(([token]) => token);
   }
 
   async publish(channel: string, payload: unknown): Promise<void> {

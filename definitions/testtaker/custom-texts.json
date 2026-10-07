@@ -21,7 +21,7 @@
   },
   "booklet_warningLeaveTimerBlockTextPrompt" : {
     "label" : "Schalterbeschriftung für 'Zurück zum Test'",
-    "defaultvalue" : "Du verlässt einen zeitbeschränkten Bereich und kannst nicht zurückkehren. Trotzdem weiterblättern?"
+    "defaultvalue" : "Du verlässt einen zeitbeschränkten Bereich und kannst nicht zurückkehren."
   },
   "booklet_warningLeaveTitle-testlet" : {
     "label" : "Titel für Warnung (Dialogbox) eines nur einmal betretbaren Bereiches.",
@@ -33,11 +33,11 @@
   },
   "booklet_warningLeaveTextPrompt-testlet" : {
     "label": "Text für Warnung (Dialogbox) eines nur einmal betretbaren Bereiches.",
-    "defaultvalue" : "Du verlässt einen Bereich zu dem du später nicht zurückkehren kannst. Trotzdem weiterblättern?"
+    "defaultvalue" : "Du verlässt einen Bereich zu dem du später nicht zurückkehren kannst."
   },
   "booklet_warningLeaveTextPrompt-unit" : {
     "label": "Text für Warnung (Dialogbox) eines nur einmal betretbaren Bereiches.",
-    "defaultvalue" : "Du verlässt eine Aufgabe zu der du später nicht zurückkehren kannst. Trotzdem weiterblättern?"
+    "defaultvalue" : "Du verlässt eine Aufgabe zu der du später nicht zurückkehren kannst."
   },
   "booklet_blockLockedByAfterLeave" : {
     "label": "Block kann nicht noch einmal betreten werden",
@@ -102,10 +102,6 @@
   "booklet_codeToEnterPrompt" : {
     "label" : "Dialogbox für die Eingabe eines Freigabewortes: Aufforderung für die Eingabe eines Freigabewortes",
     "defaultvalue" : "Bitte gib das Freigabewort ein, das angesagt wurde!"
-  },
-  "booklet_codeToEnterWarning": {
-    "label" : "Dialogbox für die Eingabe eines Freigabewortes: Warnung über Groß-/Kleinschreibung",
-    "defaultvalue" : "Im Eingabefeld werden automatisch alle Buchstaben groß geschrieben."
   },
   "booklet_msgTimerStarted" : {
     "label" : "Nachricht, dass der Timer für die Bearbeitung eines Abschnittes gestartet wurde",
@@ -181,7 +177,7 @@
     "defaultvalue" : "Bitte prüfen Sie die folgenden Aufgaben-Elemente"
   },
   "syscheck_intro" : {
-    "label" : "Text auf der ersten Seite des System-Checks",
+    "label" : "Text auf der ersten Seite des Systemchecks",
     "defaultvalue" : "Dieser Systemcheck soll gewährleisten, dass das von Ihnen verwendete Endgerät für eine bestimmte Befragung oder Testung geeignet ist."
   },
   "syscheck_report_id" : {
@@ -190,7 +186,7 @@
   },
   "syscheck_report_aboutPassword": {
     "label" : "Dialog 'Bericht senden': Text über das Passworteingabefeld",
-    "defaultvalue" : "Nur berechtigten Personen ist das Speichern erlaubt. Bitte geben Sie unten das System-Check-Kennwort ein, das Sie von der Projektleitung erhalten haben!"
+    "defaultvalue" : "Nur berechtigten Personen ist das Speichern erlaubt. Bitte geben Sie unten das Systemcheck-Kennwort ein, das Sie von der Projektleitung erhalten haben!"
   },
   "syscheck_report_aboutReportId": {
     "label" : "Dialog 'Bericht senden': Text über das Passworteingabefeld",

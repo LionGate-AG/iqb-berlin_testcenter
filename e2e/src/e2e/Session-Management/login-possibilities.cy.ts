@@ -1,13 +1,13 @@
 import {
   twoStepLogin,
   probeBackendApi,
-  resetBackendData,
+  resetBackendTestData,
   visitLoginPage, checkUserName
 } from '../utils';
 
 describe('Check Login Possibilities', () => {
   before(() => {
-    resetBackendData();
+    resetBackendTestData();
     probeBackendApi();
   });
 
@@ -65,7 +65,7 @@ describe('Check Login Possibilities', () => {
     cy.get('[data-cy="continue"]')
       .click();
     cy.get('[data-cy="login-code-problem"]')
-      .contains('Versuche es noch einmal.');
+      .contains('Ups, falscher Code!');
   });
 
   it('login with right code and password', () => {

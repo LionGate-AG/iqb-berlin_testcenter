@@ -47,7 +47,8 @@ final class ReportTest extends TestCase {
       'code' => "xxx",
       'bookletname' => "BOOKLET.SAMPLE-1",
       'unitname' => "UNIT.SAMPLE",
-      'timestamp' => "1627545600",
+      'originalUnitId' => "",
+      'timestamp' => 1627545600000,
       'logentry' => "sample unit log"
     ], [
       'groupname' => "sample_group",
@@ -55,8 +56,18 @@ final class ReportTest extends TestCase {
       'code' => "xxx",
       'bookletname' => "BOOKLET.SAMPLE-1",
       'unitname' => "",
-      'timestamp' => "1627545600",
+      'originalUnitId' => "",
+      'timestamp' => 1627545600000,
       'logentry' => "sample log entry"
+    ], [
+      'groupname' => "sample_group",
+      'loginname' => "sample_user",
+      'code' => "xxx",
+      'bookletname' => "BOOKLET.SAMPLE-1",
+      'unitname' => "",
+      'originalUnitId' => "",
+      'timestamp' => 1627545600000,
+      'logentry' => "KEY : \"a;b\"\nnext"
     ]
   ];
   const RESPONSES = [
@@ -66,9 +77,10 @@ final class ReportTest extends TestCase {
       "code" => "xxx",
       "bookletname" => "BOOKLET.SAMPLE-1",
       "unitname" => "UNIT.SAMPLE",
+      "originalUnitId" => "",
       "responses" => "{\"name\":\"Sam Sample\",\"age\":34}",
       "responseType" => "",
-      "response-ts" => "1627545600",
+      "response-ts" => 1627545600000,
       "laststate" => "{\"PRESENTATIONCOMPLETE\":\"yes\"}"
     ],
     [
@@ -77,9 +89,10 @@ final class ReportTest extends TestCase {
       "code" => "xxx",
       "bookletname" => "BOOKLET.SAMPLE-2",
       "unitname" => "UNIT.SÄMPLE",
+      "originalUnitId" => "",
       "responses" => "{\"name\":\"Säm Sämple\",\"age\":42}",
       "responseType" => "immediate",
-      "response-ts" => "1627545600",
+      "response-ts" => 1627545600000,
       "laststate" => ""
     ]
   ];
@@ -144,19 +157,19 @@ final class ReportTest extends TestCase {
         [
           "id" => "0",
           "type" => "environment",
-          "label" => "Betriebsystem",
+          "label" => "Betriebssystem",
           "value" => "Linux",
           "warning" => false
         ], [
           "id" => "0",
           "type" => "environment",
-          "label" => "Betriebsystem-Version",
+          "label" => "Betriebssystemversion",
           "value" => "x86_64",
           "warning" => false
         ], [
           "id" => "0",
           "type" => "environment",
-          "label" => "Bildschirm-Auflösung",
+          "label" => "Bildschirmauflösung",
           "value" => "1680 x 1050",
           "warning" => false
         ], [
@@ -174,19 +187,19 @@ final class ReportTest extends TestCase {
         ], [
           "id" => "0",
           "type" => "environment",
-          "label" => "Browser-Plugins:",
+          "label" => "Browser-Plugins",
           "value" => "Chromium PDF Plugin, Chromium PDF Viewer",
           "warning" => false
         ], [
           "id" => "0",
           "type" => "environment",
-          "label" => "Browser-Sprache",
+          "label" => "Browsersprache",
           "value" => "en-US",
           "warning" => false
         ], [
           "id" => "0",
           "type" => "environment",
-          "label" => "Browser-Version",
+          "label" => "Browserversion",
           "value" => "79",
           "warning" => false
         ], [
@@ -204,7 +217,7 @@ final class ReportTest extends TestCase {
         ], [
           "id" => "0",
           "type" => "environment",
-          "label" => "Fenster-Größe",
+          "label" => "Fenstergröße",
           "value" => "1680 x 914",
           "warning" => false
         ]
@@ -262,7 +275,7 @@ final class ReportTest extends TestCase {
         [
           "id" => "0",
           "type" => "network",
-          "label" => "RoundTrip in Ms",
+          "label" => "RoundTrip in ms",
           "warning" => false,
           "value" => "100"
         ],
@@ -383,9 +396,10 @@ final class ReportTest extends TestCase {
     $this->adminDaoMock->allows('getLogReportData')->andReturn(self::LOGS);
 
     $expectedLogsCSVReportData = self::BOM .
-      "groupname;loginname;code;bookletname;unitname;originalUnitId;timestamp;logentry\n" .
-      "\"sample_group\";\"sample_user\";\"xxx\";\"BOOKLET.SAMPLE-1\";\"UNIT.SAMPLE\";\"\";\"1627545600\";sample unit log\n" .
-      "\"sample_group\";\"sample_user\";\"xxx\";\"BOOKLET.SAMPLE-1\";\"\";\"\";\"1627545600\";sample log entry";
+      '"groupname";"loginname";"code";"bookletname";"unitname";"originalUnitId";"timestamp";"logentry"' . "\n" .
+      '"sample_group";"sample_user";"xxx";"BOOKLET.SAMPLE-1";"UNIT.SAMPLE";"";"1627545600000";"sample unit log"' . "\n" .
+      '"sample_group";"sample_user";"xxx";"BOOKLET.SAMPLE-1";"";"";"1627545600000";"sample log entry"' . "\n" .
+      '"sample_group";"sample_user";"xxx";"BOOKLET.SAMPLE-1";"";"";"1627545600000";"KEY : ""a;b""' . "\n" . 'next"';
 
     // Act
     $report = new LogReportOutput($this->workspaceId, $this->dataIds, $this->reportFormat);
@@ -444,7 +458,7 @@ final class ReportTest extends TestCase {
     $this->adminDaoMock->allows('getResponseReportData')->andReturn(self::RESPONSES);
 
     $expectedResponsesCSVReportData = self::BOM .
-      "groupname;loginname;code;bookletname;unitname;originalUnitId;responses;laststate\n" .
+      '"groupname";"loginname";"code";"bookletname";"unitname";"originalUnitId";"responses";"laststate"' . "\n" .
       '"sample_group";"sample_user";"xxx";"BOOKLET.SAMPLE-1";"UNIT.SAMPLE";"";"""{\""name\"":\""Sam Sample\"",\""age\"":34}""";"{""PRESENTATIONCOMPLETE"":""yes""}"' . "\n" .
       '"sämple_group";"sämple_user";"xxx";"BOOKLET.SAMPLE-2";"UNIT.SÄMPLE";"";"""{\""name\"":\""S\u00e4m S\u00e4mple\"",\""age\"":42}""";""';
 
@@ -514,11 +528,11 @@ final class ReportTest extends TestCase {
 
     $expectedReviewsCSVReportData = $useNewVersion
       ? self::BOM .
-        "groupname;loginname;code;bookletname;unitname;priority;reviewtime;reviewer;entry;unitlabel;bookletlabel\n" .
+        "\"groupname\";\"loginname\";\"code\";\"bookletname\";\"unitname\";\"priority\";\"reviewtime\";\"reviewer\";\"entry\";\"unitlabel\";\"bookletlabel\"\n" .
         "\"sample_group\";\"sample_user\";\"xxx\";\"BOOKLET.SAMPLE-1\";\"UNIT.SAMPLE\";\"1\";\"2021-07-29 10:00:00\";;\"this is a sample unit review\";\"\";\"\"\n" .
         "\"sample_group\";\"sample_user\";\"xxx\";\"BOOKLET.SAMPLE-1\";\"\";\"1\";\"2021-07-29 10:00:00\";;\"sample booklet review\";\"\";\"\""
       : self::BOM .
-        "groupname;loginname;code;bookletname;unitname;priority;reviewtime;entry\n" .
+        "\"groupname\";\"loginname\";\"code\";\"bookletname\";\"unitname\";\"priority\";\"reviewtime\";\"entry\"\n" .
         "\"sample_group\";\"sample_user\";\"xxx\";\"BOOKLET.SAMPLE-1\";\"UNIT.SAMPLE\";\"1\";\"2021-07-29 10:00:00\";\"this is a sample unit review\"\n" .
         "\"sample_group\";\"sample_user\";\"xxx\";\"BOOKLET.SAMPLE-1\";\"\";\"1\";\"2021-07-29 10:00:00\";\"sample booklet review\"";
 
@@ -549,11 +563,11 @@ final class ReportTest extends TestCase {
 
     $expectedReviewsCSVReportData = $useNewVersion
       ? self::BOM .
-        "groupname;loginname;code;bookletname;unitname;priority;category_content;category_design;category_tech;reviewtime;reviewer;entry;unitlabel;bookletlabel\n" .
+        "\"groupname\";\"loginname\";\"code\";\"bookletname\";\"unitname\";\"priority\";\"category_content\";\"category_design\";\"category_tech\";\"reviewtime\";\"reviewer\";\"entry\";\"unitlabel\";\"bookletlabel\"\n" .
         "\"sample_group\";\"sample_user\";\"xxx\";\"BOOKLET.SAMPLE-1\";\"UNIT.SAMPLE\";\"1\";\"FALSE\";\"FALSE\";\"TRUE\";\"2021-07-29 10:00:00\";;\"this is a sample unit review\";\"\";\"\"\n" .
         "\"sample_group\";\"sample_user\";\"xxx\";\"BOOKLET.SAMPLE-1\";\"\";\"1\";\"TRUE\";\"TRUE\";\"TRUE\";\"2021-07-29 10:00:00\";;\"sample booklet review\";\"\";\"\""
       : self::BOM .
-        "groupname;loginname;code;bookletname;unitname;priority;category: content;category: design;category: tech;reviewtime;entry\n" .
+        "\"groupname\";\"loginname\";\"code\";\"bookletname\";\"unitname\";\"priority\";\"category: content\";\"category: design\";\"category: tech\";\"reviewtime\";\"entry\"\n" .
         "\"sample_group\";\"sample_user\";\"xxx\";\"BOOKLET.SAMPLE-1\";\"UNIT.SAMPLE\";\"1\";;;\"X\";\"2021-07-29 10:00:00\";\"this is a sample unit review\"\n" .
         "\"sample_group\";\"sample_user\";\"xxx\";\"BOOKLET.SAMPLE-1\";\"\";\"1\";\"X\";\"X\";\"X\";\"2021-07-29 10:00:00\";\"sample booklet review\"";
 
@@ -701,6 +715,12 @@ final class ReportTest extends TestCase {
     $this->testGenerateReviewsReportWithFailure(ReportFormat::CSV);
   }
 
+  function testSysCheckDigestUsesCorrectedEnvironmentLabels(): void {
+    // Exercise the shared sample report so label changes cannot silently empty admin summaries.
+    $report = new SysCheckReportFile(self::SYS_CHECK_SAMPLE_DATA_FILE);
+    $this->assertSame(['os' => 'Linux x86_64', 'browser' => 'Chrome 79'], $report->getDigest());
+  }
+
   function testGenerateSysChecksCSVReportWithSuccess(): void {
     // Arrange
     $this->reportType = ReportType::SYSCHECK;
@@ -710,8 +730,8 @@ final class ReportTest extends TestCase {
       ->andReturn([new SysCheckReportFile(self::SYS_CHECK_SAMPLE_DATA_FILE)]);
 
     $expectedSysChecksCSVReportData = self::BOM .
-      "\"Titel\";\"SysCheck-Id\";\"SysCheck\";\"Responses\";\"DatumTS\";\"Datum\";\"FileName\";\"Betriebsystem\";\"Betriebsystem-Version\";\"Bildschirm-Auflösung\";\"Browser\";\"Browser-Cookies aktiviert\";\"Browser-Plugins:\";\"Browser-Sprache\";\"Browser-Version\";\"CPU-Architektur\";\"CPU-Kerne\";\"Fenster-Größe\";\"Downloadgeschwindigkeit\";\"Downloadgeschwindigkeit benötigt\";\"Downloadbewertung\";\"Uploadgeschwindigkeit\";\"Uploadgeschwindigkeit benötigt\";\"Uploadbewertung\";\"Gesamtbewertung\";\"RoundTrip in Ms\";\"Netzwerktyp nach Leistung\";\"Downlink MB/s\";\"Name\";\"Who am I?\";\"Why so serious?\";\"Check this out\";\"All we here is\";\"loading time\"\n" .
-      "\"SAMPLE SYS-CHECK REPORT\";\"SYSCHECK.SAMPLE\";\"An example SysCheck definition\";\"\";\"" . filemtime(self::SYS_CHECK_SAMPLE_DATA_FILE) . "\";\"" . TimeStamp::toSQLFormat(filemtime(self::SYS_CHECK_SAMPLE_DATA_FILE)) . "\";\"" . basename(self::SYS_CHECK_SAMPLE_DATA_FILE) . "\";\"Linux\";\"x86_64\";\"1680 x 1050\";\"Chrome\";\"1\";\"Chromium PDF Plugin, Chromium PDF Viewer\";\"en-US\";\"79\";\"amd64\";\"8\";\"1680 x 914\";\"75.72 Mbit/s\";\"8.19 kbit/s\";\"good\";\"2.84 Mbit/s\";\"8.19 kbit/s\";\"good\";\"good\";\"100\";\"4g\";\"1.45\";\"Sam Sample\";\"Harvy Dent\";\"Because.\";\"1\";\"Radio Gaga\";\"1594.295166015625\"";
+      "\"Titel\";\"SysCheck-Id\";\"SysCheck\";\"Responses\";\"DatumTS\";\"Datum\";\"FileName\";\"Betriebssystem\";\"Betriebssystemversion\";\"Bildschirmauflösung\";\"Browser\";\"Browser-Cookies aktiviert\";\"Browser-Plugins\";\"Browsersprache\";\"Browserversion\";\"CPU-Architektur\";\"CPU-Kerne\";\"Fenstergröße\";\"Downloadgeschwindigkeit\";\"Downloadgeschwindigkeit benötigt\";\"Downloadbewertung\";\"Uploadgeschwindigkeit\";\"Uploadgeschwindigkeit benötigt\";\"Uploadbewertung\";\"Gesamtbewertung\";\"RoundTrip in ms\";\"Netzwerktyp nach Leistung\";\"Downlink MB/s\";\"Name\";\"Who am I?\";\"Why so serious?\";\"Check this out\";\"All we here is\";\"loading time\"\n" .
+      "\"SAMPLE SYS-CHECK REPORT\";\"SYSCHECK.SAMPLE\";\"An example SysCheck definition\";\"\";\"" . filemtime(self::SYS_CHECK_SAMPLE_DATA_FILE) . "\";\"" . TimeStamp::toDisplayFormat(filemtime(self::SYS_CHECK_SAMPLE_DATA_FILE)) . "\";\"" . basename(self::SYS_CHECK_SAMPLE_DATA_FILE) . "\";\"Linux\";\"x86_64\";\"1680 x 1050\";\"Chrome\";\"1\";\"Chromium PDF Plugin, Chromium PDF Viewer\";\"en-US\";\"79\";\"amd64\";\"8\";\"1680 x 914\";\"75.72 Mbit/s\";\"8.19 kbit/s\";\"good\";\"2.84 Mbit/s\";\"8.19 kbit/s\";\"good\";\"good\";\"100\";\"4g\";\"1.45\";\"Sam Sample\";\"Harvy Dent\";\"Because.\";\"1\";\"Radio Gaga\";\"1594.295166015625\"";
 
     // Act
     $report = new SysCheckReportOutput($this->workspaceId, $this->dataIds, $this->reportFormat);
@@ -740,7 +760,7 @@ final class ReportTest extends TestCase {
       ], [
         "id" => "datestr",
         "label" => "Datum",
-        "value" => TimeStamp::toSQLFormat(filemtime(self::SYS_CHECK_SAMPLE_DATA_FILE))
+        "value" => TimeStamp::toDisplayFormat(filemtime(self::SYS_CHECK_SAMPLE_DATA_FILE))
       ], [
         "id" => "filename",
         "label" => "FileName",

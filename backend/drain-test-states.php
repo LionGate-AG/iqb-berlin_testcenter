@@ -30,7 +30,7 @@ declare(strict_types=1);
  *   STATE_DRAIN_INTERVAL_MS  how often pending states are flushed   (default 2000)
  *   STATE_DRAIN_BATCH        rows per UPDATE                         (default 500)
  *   STATE_DRAIN_REPORT_SEC   seconds between stats log lines         (default 30)
- * plus the same MYSQL_* / REDIS_* / TESTCENTER_AUTH_TOKEN_TTL variables the backend
+ * plus the same DB_* / REDIS_* / TESTCENTER_AUTH_TOKEN_TTL variables the backend
  * receives.
  */
 

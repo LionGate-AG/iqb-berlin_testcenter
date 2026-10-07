@@ -1,31 +1,20 @@
-- read docs/PR-policy.md
-- focus on achieving the current taks at hand with minimal code. never refactor existing code, if not explicitly being asked to.
-- When writing SQL queries (in .php and .sql), use ALLCAPS for SQL keywords
-- Base database-related changes only on the table shape in `scripts/database/full.sql`; current database contents are unavailable.
-- when modifying the number of rows of any sql table within the sampledata, make sure to adapt calls to 'expect_table_to_have_rows' in all scripts in backend/test/initialization/tests/general
+- When implementing features or bugfixes also add documentation about it in the file docs/CHANGELOG.md. user facing changes at the top.
+  - Leave a note under "Technisches" only if the change matters to people operating or extending a
+    deployment of this project from the outside - e.g. API changes, database/schema changes,
+    deployment/config changes, new or changed environment variables, updated dependencies. Do not
+    add a note there for internal implementation details - frontend implementation details
+    (refactors, internal service/component wiring, etc.) never qualify, even if the change is
+    "breaking" for a fork's custom patches; those are already visible to codebase contributors via
+    commit messages and diffs.
+- When planning or implementing solutions, don't just fix the symptoms. Try to find the root cause.
+- When other parts of the code do not allow a clean solution, do not work around that. Propose infrastrucure changes that allow for a clean solution.
+- If there a multiple solutions for a problem ask which one to take instead of quietly picking one.
+- Existing code is not an argument for new code. "It is already done this way elsewhere" only counts if that pattern is good on its own merits; do not carry earlier bad practices into new development.
+- Do not change production code just to make tests work (e.g. branches only the test environment takes). Adapt the test setup or test infrastructure instead.
+- Commit subjects start with a tag in square brackets naming the area the change is about, e.g. `[be] Fix …`.
+  - Tags: `[be]` backend, `[fe]` frontend, `[e2e]` end-to-end tests, `[docs]` documentation, `[db]` database,
+    `[bs]` broadcasting service, `[fs]` file server, `[ci]` CI pipelines, `[infra]` Docker images and deployment,
+    `[helm]` helm chart, `[xsd]` XML schemas.
+  - Several areas: adjacent tags, `[be][fe]`. Tests and docs that come with a change get no tag of their own.
+  - Do not use other tags. Ask first if none of these fits.
 
-
-- **Use declarative colors and font sizes instead of hex codes**: Do not copy hex code colors. Prefer using declarative colors and declarative font sizes when possible.
-
-
-- Prefer single quotes over double quotes
-
-
-## Domain-Specific Terminology
-
-* **Workspace** - One Instance of the testcenter application can have multiple workspaces, each with their own user access rights.
-* **User** - Each User is one administrator of some kind.
-* **Login** - One Login is one person that actually logs in to take the examination.
-* **File** - One file is either following the validation rules for vo_Booklet.xsd, vo_SysCheck.xsd, vo_Testtakers.xsd, vo_Unit.xsd or unvalidated Resource.
-* **Booklet** - The highest level of how a test is structured into which units.
-* **Unit** - Has the actual task and how this task is rendered with which player.
-* **Syscheck** - Describes analogous to Booklets, which units are to be loaded for a syscheck. A syscheck tries to show example units for users to find out if the testcenter instance works.
-* **Resource** - A not defined File that can be loaded into a test.
-* **Attachment** - A deprecated module. Used to describe user uploaded files via direct upload as response object.
-* **Test** - The actual test run. Shows the order of units, described in the Booklet.
-* **Verona-Player** - The html and javascript code that is injected as iframe into the testcenter and visually displays the content of the test.
-* **Testtaker** - The File that defines all logins.
-* **Test Command** - A Navigation command that can be send from a users to a login.
-* **Log** - Set of Data on the unit and test level.
-* **Unit Data** - Set of Data that specifically handles the responses given by logins in their respective tests.
-* **Review** - users can give reviews to uploaded tests.
