@@ -10,7 +10,13 @@ class DB {
     // database or its pooler and tears it down at request end -- under load that is a connect storm,
     // not a steady pool. PHP-FPM keeps one persistent connection per worker process and reuses it
     // across that worker's requests instead.
-    self::$pdo = self::open(SystemConfig::$database_name, [PDO::ATTR_PERSISTENT => true]);
+    self::$pdo = self::open(SystemConfig::$database_name, [
+      PDO::ATTR_PERSISTENT => true,
+      // PgBouncer (transaction pooling) cannot handle the SQL `DEALLOCATE pdo_stmt_...`
+      // that PHP 8.3's PDO uses to free named prepared statements; inside a transaction
+      // the failing DEALLOCATE aborts it. Unnamed statements still bind parameters server-side.
+      PDO::PGSQL_ATTR_DISABLE_PREPARES => true,
+    ]);
   }
 
   static function connectToTestDB(): void {
