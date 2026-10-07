@@ -111,7 +111,7 @@ export class MainDataService {
       this.appTitle$.next(appConfig.appTitle);
       this.globalWarning = appConfig.getWarningMessage();
       const authData = this.getAuthData();
-      if (authData) {
+      if (authData?.customTexts) {
         this.cts.addCustomTexts(authData.customTexts);
       }
     });
@@ -127,6 +127,13 @@ export class MainDataService {
       this.cts.addCustomTexts(authData.customTexts);
     }
     localStorage.setItem(localStorageAuthDataKey, JSON.stringify(authData));
+  }
+
+  // fully clears auth state (in-memory subject AND localStorage) back to null, without navigating away -
+  // use this to undo a partial/primed setAuthData() call that never got hydrated into a full, valid AuthData
+  clearAuthData(): void {
+    this._authData$.next(null);
+    localStorage.removeItem(localStorageAuthDataKey);
   }
 
   logOut(): void {
