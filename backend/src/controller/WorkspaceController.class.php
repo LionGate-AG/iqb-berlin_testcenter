@@ -139,6 +139,7 @@ class WorkspaceController extends Controller {
         $filename,
         ($fileType === 'Resource') ? 'application/octet-stream' : 'text/xml'
       );
+
     }
 
     $filePath = $workspace->getFilePath($fileType, $filename);

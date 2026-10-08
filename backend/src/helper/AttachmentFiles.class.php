@@ -69,7 +69,6 @@ class AttachmentFiles {
     if (Storage::isObjectStore()) {
       Storage::driver()->delete(Storage::toLogical($filePath));
     } elseif (file_exists($filePath)) {
-
       unlink($filePath);
     }
   }

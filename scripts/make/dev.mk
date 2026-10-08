@@ -2,20 +2,14 @@ TC_BASE_DIR := $(shell git rev-parse --show-toplevel)
 
 -include $(TC_BASE_DIR)/.env.dev
 
-# Selects which storage backend runs: "file-server" (default) or "minio".
-# Mutually exclusive - only one is ever active, e.g. `make up profile=minio`.
-# Drives both which containers start (PROFILE_FLAG) and how the app is
-# configured (STORAGE_ENV) - the latter is exported into the shell so it
-# overrides whatever STORAGE_DRIVER/OBJECT_STORE_ENABLED/FILE_SERVER_ENABLED
-# happen to be set to in .env.dev (Compose resolves shell env before
-# --env-file), so the two can never drift out of sync.
-profile ?= file-server
-PROFILE_FLAG = --profile $(profile)
-ifeq ($(profile),minio)
-STORAGE_ENV = STORAGE_DRIVER=s3 OBJECT_STORE_ENABLED=true FILE_SERVER_ENABLED=false
-else
-STORAGE_ENV = STORAGE_DRIVER=filesystem OBJECT_STORE_ENABLED=false FILE_SERVER_ENABLED=true
-endif
+# Activates the compose `s3` profile (starts the bundled local SeaweedFS, see
+# docker-compose.dev.yml) whenever .env.dev has STORAGE_DRIVER=s3, without a
+# separate variable to keep in sync. `down` without it leaves a profiled
+# service's container running (and blocking network teardown) if that
+# container was started via a `run`-triggered dependency rather than `up`, so
+# every target touching this project's containers needs it, not just the ones
+# that create them.
+COMPOSE_PROFILE := $(if $(filter s3,$(STORAGE_DRIVER)),--profile s3,)
 
 ## prevents collisions of make target names with possible file names
 .PHONY: init dev-registry-login dev-registry-logout build up down start stop logs composer-install composer-update\
@@ -38,12 +32,10 @@ dev-registry-logout:
 
 # Build all images of the project or a specified one as dev-images.
 # Param: (optional) service - Only build a specified service, e.g. `service=backend`
-# Param: (optional) profile - file-server (default) or minio, e.g. `profile=minio`
 build:	dev-registry-login
 	cd $(TC_BASE_DIR) &&\
-	$(STORAGE_ENV) docker compose\
+	docker compose\
 			--progress plain\
-			$(PROFILE_FLAG)\
 			--env-file .env.dev\
 			--file docker-compose.yml\
 			--file docker-compose.dev.yml\
@@ -52,62 +44,58 @@ build:	dev-registry-login
 # Ramp the application up (i.e. creates and starts all application containers).
 # Hint: Stop local webserver before, to free port 80
 # Param: (optional) service - Only ramp up a specified service, e.g. `service=backend`
-# Param: (optional) profile - file-server (default) or minio, e.g. `profile=minio`
 up:
 	cd $(TC_BASE_DIR) &&\
-	$(STORAGE_ENV) docker compose\
-			$(PROFILE_FLAG)\
+	docker compose\
 			--env-file .env.dev\
 			--file docker-compose.yml\
 			--file docker-compose.dev.yml\
+			$(COMPOSE_PROFILE)\
 		up $(service)
 
 # Stop and remove all application containers.
-# Param: (optional) profile - file-server (default) or minio, e.g. `profile=minio`
 down:
 	cd $(TC_BASE_DIR) &&\
-	$(STORAGE_ENV) docker compose\
-			$(PROFILE_FLAG)\
+	docker compose\
 			--env-file .env.dev\
 			--file docker-compose.yml\
 			--file docker-compose.dev.yml\
+			$(COMPOSE_PROFILE)\
 		down --remove-orphans $(service)
 
 # Start the application with already existing containers.
 # Param: (optional) service - Only start a specified service, e.g. `service=backend`
-# Param: (optional) profile - file-server (default) or minio, e.g. `profile=minio`
 start:
 	cd $(TC_BASE_DIR) &&\
-	$(STORAGE_ENV) docker compose\
-			$(PROFILE_FLAG)\
+	docker compose\
 			--env-file .env.dev\
 			--file docker-compose.yml\
 			--file docker-compose.dev.yml\
+			$(COMPOSE_PROFILE)\
 		start $(service)
 
 # Stop the application but don't remove the service containers.
 # Param: (optional) service - Only stop a specified service, e.g. `service=backend`
-# Param: (optional) profile - file-server (default) or minio, e.g. `profile=minio`
 stop:
 	cd $(TC_BASE_DIR) &&\
-	$(STORAGE_ENV) docker compose\
-			$(PROFILE_FLAG)\
+	docker compose\
 			--env-file .env.dev\
 			--file docker-compose.yml\
 			--file docker-compose.dev.yml\
+			$(COMPOSE_PROFILE)\
 		stop $(service)
 
 # Log the application.
 # Param: (optional) service - Only log a specified service, e.g. `service=backend`
-# Param: (optional) profile - file-server (default) or minio, e.g. `profile=minio`
 logs:
 	cd $(TC_BASE_DIR) &&\
-	$(STORAGE_ENV) docker compose\
-			$(PROFILE_FLAG)\
+	docker compose\
 			--env-file .env.dev\
 			--file docker-compose.yml\
 			--file docker-compose.dev.yml\
+			$(COMPOSE_PROFILE)\
 		logs --follow $(service)
+
 
 ## Open DB console
 connect-db:
@@ -196,6 +184,7 @@ init-backend:
 			--env-file .env.dev\
 			--file docker-compose.yml\
 			--file docker-compose.dev.yml\
+			$(COMPOSE_PROFILE)\
 		run --rm --no-TTY --entrypoint /initialize_only.sh backend
 
 # Creates some interfaces for booklets and test-modes out of the definitions.

@@ -75,6 +75,10 @@ spec:
                   name: {{ .Release.Name }}-backend-config
                   key: REDIS_CACHE_FILES
             {{- if .Values.objectStore.enabled }}
+            # Object-store path only. Without this block STORAGE_DRIVER stays unset,
+            # SystemConfig keeps its 'filesystem' default and the backend serves from
+            # the data PVC exactly as before.
+
             - name: STORAGE_DRIVER
               value: "s3"
             - name: S3_ENDPOINT

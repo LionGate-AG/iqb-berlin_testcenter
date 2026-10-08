@@ -96,6 +96,7 @@ spec:
                   key: S3_SECRET_KEY
             {{- end }}
             # DB_* is the stable application interface. The database pod maps it to PostgreSQL below.
+
             - name: DB_HOST
 
               value: "{{ .Release.Name }}-db"

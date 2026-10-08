@@ -3,6 +3,7 @@
 -- (including the object-store redirect below)
 ngx.header["Cache-Control"] = "private"
 
+
 -- Object-store mode (read path B): the bytes live in the bucket, not on disk.
 -- Ask the backend to mint a presigned URL for the already-authorized request
 -- (auth.lua ran first), then redirect the client straight to the object store.
