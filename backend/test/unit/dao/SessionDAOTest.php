@@ -703,4 +703,17 @@ class SessionDAOTest extends TestCase {
   private function countTableRows(string $tableName): int {
     return (int) $this->dbc->_("select count(*) as c from $tableName")["c"];
   }
+
+  function test_getLoginByName_returnsLoginWithoutPasswordCheck(): void {
+    $login = $this->dbc->getLoginByName('sample_user');
+
+    $this->assertInstanceOf(Login::class, $login);
+    $this->assertEquals('sample_user', $login->getName());
+    $this->assertEquals('run-hot-return', $login->getMode());
+    $this->assertEquals(1, $login->getWorkspaceId());
+  }
+
+  function test_getLoginByName_returnsNullForUnknownLogin(): void {
+    $this->assertNull($this->dbc->getLoginByName('does-not-exist'));
+  }
 }

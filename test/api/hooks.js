@@ -291,6 +291,15 @@ const finishAfterError = (transaction, done) => {
 };
 
 dreddHooks.beforeEach(beforeEach);
+// Portal-integration endpoints (static `Authorization: Bearer` token, TBA-Portal only): the API-test backend
+// has neither ANSWERS_TOKEN nor PORTAL_SESSION_TOKEN configured, so these transactions are skipped here. They are
+// covered by PHPUnit (RequireStaticTokenTest, PortalRoutesTest, PortalControllerTest, PortalDAOTest, SessionControllerTest).
+dreddHooks.beforeEach((transaction, done) => {
+  if ((transaction.request.headers.Authorization || '').startsWith('Bearer ')) {
+    transaction.skip = true;
+  }
+  done();
+});
 dreddHooks.beforeEachValidation(beforeEachValidation);
 dreddHooks.before('specs > /workspace/{ws_id}/file > upload file > 201 > application/json', attachUploadFile);
 dreddHooks.before('specs > /workspace/{ws_id}/file > upload file > 207 > application/json', addInvalidUploadFile);
