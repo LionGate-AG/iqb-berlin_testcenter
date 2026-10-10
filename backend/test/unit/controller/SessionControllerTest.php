@@ -6,6 +6,7 @@ use Mockery\Adapter\Phpunit\MockeryPHPUnitIntegration;
 use PHPUnit\Framework\MockObject\MockObject;
 use PHPUnit\Framework\TestCase;
 use Slim\Exception\HttpBadRequestException;
+use Slim\Exception\HttpNotFoundException;
 use Slim\Exception\HttpUnauthorizedException;
 
 class SessionControllerInjector extends SessionController {
@@ -616,6 +617,77 @@ final class SessionControllerTest extends TestCase {
     $this->expectException(HttpUnauthorizedException::class);
     SessionController::getSession(
       RequestCreator::create('GET', '/session')->withAttribute('AuthToken', $unknownToken),
+      ResponseCreator::createEmpty()
+    );
+  }
+
+  public function test_putPortalSessionPerson_createsPersonSessionWithoutPasswordAndKeepsToken(): void {
+    $login = new Login('100', 'password_hash', 'run-hot-return', '100', 'Gruppe 8A', ['uuid-1' => ['THE_BOOKLET']], 1);
+    $loginSession = new LoginSession(4, 'login_token', 'group-token', $login);
+
+    $this->mockSessionDAO(
+      [
+        'getLoginByName' => $login,
+        'createLoginSession' => $loginSession,
+        'createOrUpdatePersonSession' => new PersonSession($loginSession, new Person(1, 'person_token', 'uuid-1', 'uuid-1')),
+        'getTestsOfPerson' => [],
+      ],
+      [
+        'getLoginByName' => 1,
+        'createLoginSession' => 1,
+        'createOrUpdatePersonSession' => 1,
+      ]
+    );
+
+    $response = SessionController::putPortalSessionPerson(
+      RequestCreator::create('PUT', '/portal/session/person', '{"loginName":"100","code":"uuid-1","keepExistingToken":true}'),
+      ResponseCreator::createEmpty()
+    );
+
+    $response->getBody()->rewind();
+    $this->assertEquals(200, $response->getStatusCode());
+    $this->assertEquals('person_token', json_decode($response->getBody()->getContents(), true)['token']);
+  }
+
+  public function test_putPortalSessionPerson_404ForUnknownLogin(): void {
+    $this->mockSessionDAO(['getLoginByName' => null]);
+    $this->expectException(HttpNotFoundException::class);
+
+    SessionController::putPortalSessionPerson(
+      RequestCreator::create('PUT', '/portal/session/person', '{"loginName":"nope","code":"uuid-1"}'),
+      ResponseCreator::createEmpty()
+    );
+  }
+
+  public function test_putPortalSessionLogin_returnsPersonSessionIfNoCodeRequired(): void {
+    $login = new Login('aufsicht-uuid', 'password_hash', 'run-hot-return', 'grp', 'Gruppe', ['' => ['THE_BOOKLET']], 1);
+    $loginSession = new LoginSession(1, 'some_token', 'group-token', $login);
+
+    $this->mockSessionDAO([
+      'getLoginByName' => $login,
+      'createLoginSession' => $loginSession,
+      'createOrUpdatePersonSession' => new PersonSession($loginSession, new Person(1, 'new_token', '', '')),
+      'getTestsOfPerson' => [],
+      'getGroupMonitors' => [],
+      'getSysChecksOfPerson' => [],
+      'getDependantSessions' => [],
+    ]);
+
+    $response = SessionController::putPortalSessionLogin(
+      RequestCreator::create('PUT', '/portal/session/login', '{"name":"aufsicht-uuid"}'),
+      ResponseCreator::createEmpty()
+    );
+
+    $response->getBody()->rewind();
+    $this->assertEquals('new_token', json_decode($response->getBody()->getContents(), true)['token']);
+  }
+
+  public function test_putPortalSessionLogin_404ForUnknownLogin(): void {
+    $this->mockSessionDAO(['getLoginByName' => null]);
+    $this->expectException(HttpNotFoundException::class);
+
+    SessionController::putPortalSessionLogin(
+      RequestCreator::create('PUT', '/portal/session/login', '{"name":"nope"}'),
       ResponseCreator::createEmpty()
     );
   }

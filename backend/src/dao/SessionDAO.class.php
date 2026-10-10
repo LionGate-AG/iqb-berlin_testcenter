@@ -88,7 +88,38 @@ class SessionDAO extends DAO {
   }
 
   public function getLogin(string $name, string $password): Login | FailedLogin {
-    $result = $this->_(
+    $result = $this->selectLogin($name);
+
+    if (!$result) {
+      // we always check one password to not leak the existence of username to time-attacks
+      Password::verify($password, 'dummy', 't');
+      return FailedLogin::usernameNotFound;
+    }
+
+    $login = $this->loginFromRow($result);
+
+    // TODO also use customizable use salt for testees? -> change would break current sessions
+    $passwordMissing = ($password === '') && Mode::requiresPassword($login->getMode());
+    if (!Password::verify($password, $result['password'], 't') || $passwordMissing) {
+      return Mode::hasCapability($login->getMode(), ModeCapability::LOCK_AFTER_FAILED_LOGINS) ?
+        FailedLogin::wrongPasswordLockableLogin :
+        FailedLogin::wrongPassword;
+    }
+
+    return $login;
+  }
+
+  /**
+   * Login by name WITHOUT password check - only for trusted server-to-server calls of the TBA-Portal
+   * (PUT /portal/session/*, guarded by a static token). Null if the login does not exist.
+   */
+  public function getLoginByName(string $name): ?Login {
+    $result = $this->selectLogin($name);
+    return $result ? $this->loginFromRow($result) : null;
+  }
+
+  private function selectLogin(string $name): ?array {
+    return $this->_(
       'select
               logins.name,
               logins.mode,
@@ -111,19 +142,15 @@ class SessionDAO extends DAO {
         ':name' => $name
       ]
     );
+  }
 
-    if (!$result) {
-      // we always check one password to not leak the existence of username to time-attacks
-      Password::verify($password, 'dummy', 't');
-      return FailedLogin::usernameNotFound;
-    }
-
+  private function loginFromRow(array $result): Login {
     TimeStamp::checkExpiration(
       TimeStamp::fromSQLFormat($result['valid_from']),
       TimeStamp::fromSQLFormat($result['valid_to'])
     );
 
-    $login = new Login(
+    return new Login(
       $result['name'],
       '',
       $result['mode'],
@@ -138,17 +165,6 @@ class SessionDAO extends DAO {
       JSON::decode($result['monitors'], true),
       JSON::decode($result['view_settings'], true) ?? []
     );
-
-
-    // TODO also use customizable use salt for testees? -> change would break current sessions
-    $passwordMissing = ($password === '') && Mode::requiresPassword($login->getMode());
-    if (!Password::verify($password, $result['password'], 't') || $passwordMissing) {
-      return Mode::hasCapability($login->getMode(), ModeCapability::LOCK_AFTER_FAILED_LOGINS) ?
-        FailedLogin::wrongPasswordLockableLogin :
-        FailedLogin::wrongPassword;
-    }
-
-    return $login;
   }
 
   public function createLoginSession(Login $login): LoginSession {

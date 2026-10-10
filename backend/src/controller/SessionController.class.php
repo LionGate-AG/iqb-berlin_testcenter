@@ -7,6 +7,7 @@ declare(strict_types=1);
 
 use Slim\Exception\HttpBadRequestException;
 use Slim\Exception\HttpException;
+use Slim\Exception\HttpNotFoundException;
 use Slim\Exception\HttpUnauthorizedException;
 use Slim\Http\Response;
 use Slim\Http\ServerRequest as Request;
@@ -307,6 +308,10 @@ class SessionController extends Controller {
     // Reset the attempts to not trigger lockout on repeated succesful login-logout
     CacheService::resetFailedLogins($name);
 
+    return self::accessSetForLoginSession($loginSession);
+  }
+
+  private static function accessSetForLoginSession(LoginSession $loginSession): AccessSet {
     if ($loginSession->getLogin()->isCodeRequired()) {
       return AccessSet::createFromLoginSession($loginSession);
     }
@@ -322,12 +327,48 @@ class SessionController extends Controller {
   }
 
   public static function createPersonSession(string $token, string $code, bool $keepExistingToken = false): AccessSet {
-
     $loginSession = self::sessionDAO()->getLoginSessionByToken($token);
+    return self::accessSetForPersonSession($loginSession, $code, $keepExistingToken);
+  }
+
+  private static function accessSetForPersonSession(LoginSession $loginSession, string $code, bool $keepExistingToken): AccessSet {
     $personSession = self::sessionDAO()->createOrUpdatePersonSession($loginSession, $code, false, !$keepExistingToken);
     CacheService::removeAuthentication($personSession);
     $testsOfPerson = self::sessionDAO()->getTestsOfPerson($personSession);
     CacheService::storeAuthentication($personSession);
     return AccessSet::createFromPersonSession($personSession, ...$testsOfPerson);
+  }
+
+  /**
+   * PUT /portal/session/login - TBA-Portal only (server-to-server, RequireStaticToken('PORTAL_SESSION_TOKEN')).
+   * Like PUT /session/login, but without password and brute-force challenge: the portal is trusted.
+   */
+  public static function putPortalSessionLogin(Request $request, Response $response): Response {
+    $body = RequestHelper::getFields($request, ['name' => 'REQUIRED']);
+    $login = self::sessionDAO()->getLoginByName($body['name']);
+    if (!$login) {
+      throw new HttpNotFoundException($request, 'No Login for `' . htmlspecialchars($body['name']) . '`.');
+    }
+    $loginSession = self::sessionDAO()->createLoginSession($login);
+    return $response->withJson(self::accessSetForLoginSession($loginSession));
+  }
+
+  /**
+   * PUT /portal/session/person - TBA-Portal only (server-to-server, RequireStaticToken('PORTAL_SESSION_TOKEN')).
+   * Creates (or with keepExistingToken: reuses) the person session of `code` under the login `loginName`,
+   * without password and brute-force challenge.
+   */
+  public static function putPortalSessionPerson(Request $request, Response $response): Response {
+    $body = RequestHelper::getFields($request, [
+      'loginName' => 'REQUIRED',
+      'code' => '',
+      'keepExistingToken' => false
+    ]);
+    $login = self::sessionDAO()->getLoginByName($body['loginName']);
+    if (!$login) {
+      throw new HttpNotFoundException($request, 'No Login for `' . htmlspecialchars($body['loginName']) . '`.');
+    }
+    $loginSession = self::sessionDAO()->createLoginSession($login);
+    return $response->withJson(self::accessSetForPersonSession($loginSession, (string) $body['code'], (bool) $body['keepExistingToken']));
   }
 }

@@ -2197,3 +2197,167 @@ paths:
         "403":
           description: Authorization header present but token does not match ANSWERS_TOKEN
 
+
+  /workspace/{ws_id}/test-booklet-ids:
+    get:
+      summary: booklet file id of every test of a workspace
+      description: For the TBA-Portal (no database access to the testcenter). Maps tests.id to tests.file_id.
+      tags:
+        - portal integration
+      parameters:
+        - in: header
+          name: Authorization
+          description: static bearer token, configured via the `ANSWERS_TOKEN` environment variable
+          example: "Bearer Kor3ktur7oken9quee"
+          required: true
+        - in: path
+          name: ws_id
+          example: 1
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              example: {"1": "BOOKLET.SAMPLE-1"}
+        "401":
+          description: Authorization header missing
+        "403":
+          description: static token wrong or not configured
+
+  /workspace/{ws_id}/booklet-units:
+    get:
+      summary: codable units per booklet
+      description: For the TBA-Portal. Units contained in each booklet that have a coding scheme (usesScheme), keyed by booklet file id.
+      tags:
+        - portal integration
+      parameters:
+        - in: header
+          name: Authorization
+          description: static bearer token, configured via the `ANSWERS_TOKEN` environment variable
+          example: "Bearer Kor3ktur7oken9quee"
+          required: true
+        - in: path
+          name: ws_id
+          example: 1
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              example: {"BOOKLET.SAMPLE-1": ["UNIT.SAMPLE"]}
+        "401":
+          description: Authorization header missing
+        "403":
+          description: static token wrong or not configured
+
+  /workspace/{ws_id}/testee-tokens:
+    post:
+      summary: person-session tokens of testees per booklet
+      description: For the QUA-LiS export of the TBA-Portal. One row per testee code and booklet with the person session's name_suffix.
+      tags:
+        - portal integration
+      parameters:
+        - in: header
+          name: Authorization
+          description: static bearer token, configured via the `ANSWERS_TOKEN` environment variable
+          example: "Bearer Kor3ktur7oken9quee"
+          required: true
+        - in: path
+          name: ws_id
+          example: 1
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                codes:
+                  type: array
+                  items:
+                    type: string
+            example: {"codes": ["xxx"]}
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              example: [{"code": "xxx", "bookletFileId": "BOOKLET.SAMPLE-1", "nameSuffix": "xxx"}]
+        "400":
+          description: codes missing or not an array
+        "401":
+          description: Authorization header missing
+        "403":
+          description: static token wrong or not configured
+
+  /workspace/{ws_id}/player-resource/{path}:
+    get:
+      summary: player file or GeoGebra resource of a workspace
+      description: >-
+        For the TBA-Portal's replay of answers (Korrektur), which has no file access to the testcenter.
+        Streams only a Verona player of the workspace (by file name, files.verona_module_type = 'player')
+        or a file below Resource/GeoGebra/; every other path answers 404. Privately cacheable for one hour.
+      tags:
+        - portal integration
+      parameters:
+        - in: header
+          name: Authorization
+          description: static bearer token, configured via the `ANSWERS_TOKEN` environment variable
+          example: "Bearer Kor3ktur7oken9quee"
+          required: true
+        - in: path
+          name: ws_id
+          example: 1
+          required: true
+          schema:
+            type: integer
+        - in: path
+          name: path
+          description: a player file name, or GeoGebra/ followed by a path inside the workspace's Resource/GeoGebra folder
+          example: verona-player-simple-6.0.html
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: the file
+          content:
+            text/html:
+              example: "<!DOCTYPE html><html>...</html>"
+        "401":
+          description: Authorization header missing
+        "403":
+          description: static token wrong or not configured
+        "404":
+          description: not a player or GeoGebra resource of the workspace, or the file is missing
+
+  /portal/workspaces:
+    get:
+      summary: all workspaces with their booklets
+      description: For the TBA-Portal (no database access to the testcenter).
+      tags:
+        - portal integration
+      parameters:
+        - in: header
+          name: Authorization
+          description: static bearer token, configured via the `ANSWERS_TOKEN` environment variable
+          example: "Bearer Kor3ktur7oken9quee"
+          required: true
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              example: {"1": {"name": "sample_workspace", "booklets": {"BOOKLET.SAMPLE-1": {"label": "Sample booklet", "description": "This a sample booklet for testing/development/showcase purposes."}}}}
+        "401":
+          description: Authorization header missing
+        "403":
+          description: static token wrong or not configured
