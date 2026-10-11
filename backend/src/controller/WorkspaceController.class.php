@@ -197,11 +197,6 @@ class WorkspaceController extends Controller {
   }
 
   public static function getAnswers(Request $request, Response $response): Response {
-    $auth = $request->getHeader('Authorization');
-    if (!$auth) return $response->withStatus(401);
-    $token = $_ENV['ANSWERS_TOKEN'];
-    if (!$token || !in_array('Bearer '.$token, $auth)) return $response->withStatus(403);
-
     $workspaceId = (int) $request->getAttribute('ws_id');
     $codes = RequestHelper::getRequiredField($request, 'codes');
 
@@ -210,11 +205,6 @@ class WorkspaceController extends Controller {
   }
 
   public static function getBookletFiles(Request $request, Response $response): Response {
-    $auth = $request->getHeader('Authorization');
-    if (!$auth) return $response->withStatus(401);
-    $token = $_ENV['ANSWERS_TOKEN'];
-    if (!$token || !in_array('Bearer '.$token, $auth)) return $response->withStatus(403);
-
     $workspaceId = (int) $request->getAttribute('ws_id');
     $bookletIds = RequestHelper::getRequiredField($request, 'bookletIds');
 
@@ -223,11 +213,6 @@ class WorkspaceController extends Controller {
   }
 
   public static function getTestIds(Request $request, Response $response): Response {
-    $auth = $request->getHeader('Authorization');
-    if (!$auth) return $response->withStatus(401);
-    $token = $_ENV['ANSWERS_TOKEN'];
-    if (!$token || !in_array('Bearer '.$token, $auth)) return $response->withStatus(403);
-
     $workspaceId = (int) $request->getAttribute('ws_id');
     $testIds = self::adminDAO()->getTestIdsOfWorkspace($workspaceId);
     return $response->withJson($testIds);

@@ -526,3 +526,73 @@ paths:
             text/html:
               schema:
                 $ref: './components.spec.yml#/components/schemas/error'
+
+  /portal/session/login:
+    put:
+      summary: login session for the TBA-Portal
+      description: Server-to-server only. Like PUT /session/login, but without password and brute-force challenge; guarded by its own static `PORTAL_SESSION_TOKEN`, not by `ANSWERS_TOKEN`.
+      tags:
+        - portal integration
+      parameters:
+        - in: header
+          name: Authorization
+          description: static bearer token, configured via the `PORTAL_SESSION_TOKEN` environment variable
+          example: "Bearer Por7alSe5sion9oken"
+          required: true
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+              required:
+                - name
+            example: {"name": "test"}
+      responses:
+        "200":
+          description: AccessSet (same as PUT /session/login)
+        "401":
+          description: Authorization header missing
+        "403":
+          description: static token wrong or not configured
+        "404":
+          description: login does not exist
+
+  /portal/session/person:
+    put:
+      summary: person session for the TBA-Portal
+      description: Server-to-server only. Creates the person session of `code` under the login `loginName` (with keepExistingToken an existing token is reused), without password and brute-force challenge; guarded by its own static `PORTAL_SESSION_TOKEN`, not by `ANSWERS_TOKEN`.
+      tags:
+        - portal integration
+      parameters:
+        - in: header
+          name: Authorization
+          description: static bearer token, configured via the `PORTAL_SESSION_TOKEN` environment variable
+          example: "Bearer Por7alSe5sion9oken"
+          required: true
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                loginName:
+                  type: string
+                code:
+                  type: string
+                keepExistingToken:
+                  type: boolean
+              required:
+                - loginName
+            example: {"loginName": "test", "code": "xxx", "keepExistingToken": true}
+      responses:
+        "200":
+          description: AccessSet of the person session
+        "401":
+          description: Authorization header missing
+        "403":
+          description: static token wrong or not configured
+        "404":
+          description: login does not exist

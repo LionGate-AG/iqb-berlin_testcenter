@@ -226,9 +226,30 @@ $app->group('/workspace', function (RouteCollectorProxy $group) {
 
 $app->put('/workspace/{ws_id}/testtakers/{filename}', [WorkspaceController::class, 'putTesttaker']);
 $app->delete('/workspace/{ws_id}/testtakers/{filename}', [WorkspaceController::class, 'deleteTesttaker']);
-$app->post('/workspace/{ws_id}/answers', [WorkspaceController::class, 'getAnswers']);
-$app->post('/workspace/{ws_id}/booklet-files', [WorkspaceController::class, 'getBookletFiles']);
-$app->get('/workspace/{ws_id}/test-ids', [WorkspaceController::class, 'getTestIds']);
+// TBA-Portal integration (server-to-server). The portal has no database or file access to the testcenter.
+$app->group('/workspace/{ws_id}', function (RouteCollectorProxy $group) {
+  $group->post('/answers', [WorkspaceController::class, 'getAnswers']);
+  $group->post('/booklet-files', [WorkspaceController::class, 'getBookletFiles']);
+  $group->get('/test-ids', [WorkspaceController::class, 'getTestIds']);
+  $group->get('/test-booklet-ids', [PortalController::class, 'getTestBookletIds']);
+  $group->get('/booklet-units', [PortalController::class, 'getBookletUnits']);
+  $group->post('/testee-tokens', [PortalController::class, 'getTesteeTokens']);
+  $group->get('/player-resource/{path:.*}', [PortalController::class, 'getPlayerResource']);
+})
+  ->add(new RequireStaticToken('ANSWERS_TOKEN'));
+
+$app->group('/portal', function (RouteCollectorProxy $group) {
+  $group->get('/workspaces', [PortalController::class, 'getWorkspaces']);
+})
+  ->add(new RequireStaticToken('ANSWERS_TOKEN'));
+
+// Sessions without password or brute-force challenge: guarded by a token of their own, so that the read token
+// (ANSWERS_TOKEN) cannot be used to log in as a testee or a group monitor.
+$app->group('/portal/session', function (RouteCollectorProxy $group) {
+  $group->put('/login', [SessionController::class, 'putPortalSessionLogin']);
+  $group->put('/person', [SessionController::class, 'putPortalSessionPerson']);
+})
+  ->add(new RequireStaticToken('PORTAL_SESSION_TOKEN'));
 
 $app->group('/user', function (RouteCollectorProxy $group) {
   $group->get('/{user_id}/workspaces', [UserController::class, 'getWorkspaces']);
