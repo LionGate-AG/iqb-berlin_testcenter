@@ -487,10 +487,13 @@ class SessionDAOTest extends TestCase {
     $this->assertEquals($expectation, $result);
     $this->assertEquals(8, $this->countTableRows('login_sessions'));
 
+    $lastIdBefore2ndLogin = $this->lastLoginSessionId();
     $resultAfter2ndLogin = $this->dbc->createLoginSession($anotherLogin);
 
     $this->assertEquals($expectation, $resultAfter2ndLogin);
     $this->assertEquals(8, $this->countTableRows('login_sessions'));
+    // a repeated login is answered by the read-first SELECT: no INSERT, so no id is consumed
+    $this->assertEquals($lastIdBefore2ndLogin, $this->lastLoginSessionId());
 
     $anotherLogin = new Login(
       "yet_another_one",
@@ -503,15 +506,17 @@ class SessionDAOTest extends TestCase {
       946803600
     );
 
+    $result = $this->dbc->createLoginSession($anotherLogin);
+
+    // the id is whatever the identity sequence hands out next; which value that is says nothing about the session
     $expectation = new LoginSession(
-      10, // 9th row, but MySQL give it ID 10
+      $result->getId(),
       'static:login:yet_another_one',
       'group-token', // as given in testdata.sql
       $anotherLogin
     );
-
-    $result = $this->dbc->createLoginSession($anotherLogin);
     $this->assertEquals($expectation, $result);
+    $this->assertEquals($lastIdBefore2ndLogin + 1, $result->getId());
     $this->assertEquals(9, $this->countTableRows('login_sessions'));
   }
 
@@ -719,5 +724,11 @@ class SessionDAOTest extends TestCase {
 
   private function countTableRows(string $tableName): int {
     return (int) $this->dbc->_("select count(*) as c from $tableName")["c"];
+  }
+
+  private function lastLoginSessionId(): int {
+    return (int) $this->dbc->_(
+      "select pg_sequence_last_value(pg_get_serial_sequence('login_sessions', 'id')::regclass) as v"
+    )["v"];
   }
 }
