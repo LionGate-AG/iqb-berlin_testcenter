@@ -12,3 +12,5 @@ data:
   PASSWORD_PATTERN: {{ .Values.config.backend.passwordPattern | quote }}
   REQUIRE_LOGIN_PASSWORD: {{ .Values.config.backend.requireLoginPassword | quote }}
   XML_SCHEMA_VALIDATION: {{ .Values.config.backend.xmlSchemaValidation | quote }}
+  TESTCENTER_CACHE_AUTH_TOKEN: {{ .Values.config.backend.cacheAuthToken | quote }}
+  TESTCENTER_AUTH_TOKEN_TTL: {{ .Values.config.backend.authTokenTtl | quote }}
