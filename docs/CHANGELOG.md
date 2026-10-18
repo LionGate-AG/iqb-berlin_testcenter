@@ -10,6 +10,7 @@
 - API: Berichte (`GET /workspace/{ws_id}/report/{type}`) ohne den optionalen Parameter `dataIds` umfassen alle Gruppen bzw. alle System-Checks des Arbeitsbereichs. Bisher brachen Log-, Antwort- und Review-Berichte mit einem SQL-Fehler ab, und der System-Check-Bericht war leer. (#1614)
 
 ## Technisches
+- Das Backend läuft mit nginx und PHP-FPM statt mit Apache und mod_php. Port (`8080`) und Routen bleiben gleich. Ein Backend-Container verarbeitet bis zu 300 Anfragen gleichzeitig; weitere Anfragen beantwortet nginx sofort mit 503, statt sie warten zu lassen. Der neue Endpunkt `/healthz` wird von nginx ohne PHP beantwortet; das Helm-Chart nutzt ihn für Liveness- und Readiness-Probe (bisher `/version` bzw. `/system/status`) und startet den Container mit `/run-server.sh` statt `apache2-foreground`. Eigene Images auf Basis des Backend-Images können keine Apache-Konfiguration (`.htaccess`, vhost) mehr verwenden. Einstellungen und Dimensionierung beschreibt [Scaling: PHP-FPM](https://pages.cms.hu-berlin.de/iqb/testcenter/pages/scaling-php-fpm.html).
 - Der Brute-Force-Schutz (`BRUTE_FORCE_PROTECTION` in `.env.prod-template`) ist bei Neuinstallationen via docker-compose ausgeschaltet.
 
 # 19.0.0

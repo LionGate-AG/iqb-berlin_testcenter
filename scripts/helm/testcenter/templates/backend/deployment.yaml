@@ -40,7 +40,7 @@ spec:
             capabilities:
               drop:
                 - ALL
-          command: [ "apache2-foreground" ]
+          command: [ "/run-server.sh" ]
           env:
             - name: BROADCASTER_ENABLED
               valueFrom:
@@ -136,9 +136,12 @@ spec:
             # backend-config-volume is still kept, as config/.lock files still exist; even if config.ini does not exist anymore
             - name: backend-config-volume
               mountPath: /var/www/testcenter/backend/config
+          # /healthz is answered by nginx without a PHP-FPM worker: a pod whose workers are all busy
+          # is neither restarted nor taken out of the Service. run-server.sh ends the container if
+          # nginx or PHP-FPM dies.
           livenessProbe:
             httpGet:
-              path: /version
+              path: /healthz
               port: 8080
             periodSeconds: {{ .Values.deployment.backend.probes.liveness.periodSeconds }}
             timeoutSeconds: {{ .Values.deployment.backend.probes.liveness.timeoutSeconds }}
@@ -146,12 +149,13 @@ spec:
             failureThreshold: {{ .Values.deployment.backend.probes.liveness.failureThreshold }}
           readinessProbe:
             httpGet:
-              path: /system/status
+              path: /healthz
               port: 8080
             periodSeconds: {{ .Values.deployment.backend.probes.readiness.periodSeconds }}
             timeoutSeconds: {{ .Values.deployment.backend.probes.readiness.timeoutSeconds }}
             successThreshold: {{ .Values.deployment.backend.probes.readiness.successThreshold }}
             failureThreshold: {{ .Values.deployment.backend.probes.readiness.failureThreshold }}
+          # /version is served by PHP-FPM, so the pod only becomes ready once PHP answers.
           startupProbe:
             httpGet:
               path: /version
