@@ -197,6 +197,7 @@ class WorkspaceController extends Controller {
    * eg [{"type": "Booklet", "name": "SAMPLE_BOOKLET.XML"}]
    */
   public static function deleteFiles(Request $request, Response $response): Response {
+    set_time_limit(600); // deleting re-validates all remaining Testtakers files, which takes long in large workspaces
     $workspaceId = (int) $request->getAttribute('ws_id');
     $filesToDelete = RequestHelper::getRequiredField($request, 'f');
 
