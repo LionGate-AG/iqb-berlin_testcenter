@@ -65,10 +65,41 @@ duration of one transaction. Thousands of persistent backend connections then ne
 connections. Transaction mode requires that clients keep no session state (no `SET`, temporary tables, advisory
 locks or named prepared statements across transactions), which the backend fulfils.
 
-### Running PgBouncer
+### docker compose
 
-The compose setup and the Helm chart connect the backend to the database service directly and do not contain
-PgBouncer yet. When PgBouncer runs in front of PostgreSQL, size it with the same rule as above:
+The compose setup contains an optional PgBouncer service in the profile `pgbouncer`. To use it, set in `.env.prod`:
+
+```
+COMPOSE_PROFILES=pgbouncer
+DB_HOST=pgbouncer
+DB_PERSISTENT_CONNECTIONS=true
+```
+
+and restart with `make testcenter-up`. `COMPOSE_PROFILES` starts the service, `DB_HOST` points the backend at it.
+PgBouncer listens on port 5432 like PostgreSQL itself, so `DB_PORT` stays unchanged. Without `DB_HOST=pgbouncer`,
+the service runs but is not used; without the profile, the backend cannot reach `pgbouncer` and does not start.
+
+The service is configured for one backend instance:
+
+| PgBouncer setting | Value | Meaning |
+|---|---|---|
+| `pool_mode` | `transaction` | a PostgreSQL connection per transaction, not per client |
+| `max_client_conn` | 1000 | backend connections PgBouncer accepts (one per worker process) |
+| `default_pool_size` | 50 | PostgreSQL connections per database and user |
+| `max_db_connections` | 80 | upper limit of PostgreSQL connections, well below `max_connections` |
+| `query_wait_timeout` | 10 s | a request waiting longer for a free PostgreSQL connection fails instead of blocking its worker |
+| open files (`ulimit -n`) | 65536 | every client connection is a file descriptor; the usual default of 1024 would cap PgBouncer at about 1000 clients |
+
+They are set as environment variables of the `pgbouncer` service in `docker-compose.yml`, from which the image
+(`edoburu/pgbouncer`) generates its configuration.
+
+Database maintenance commands (`make testcenter-connect-db`, backup and restore) connect to PostgreSQL directly and
+are not affected.
+
+### Kubernetes
+
+The Helm chart connects the backend to the database service directly and does not contain PgBouncer yet. When
+PgBouncer runs in front of PostgreSQL in a cluster, size it with the same rule as above:
 
 - **client side:** `max_client_conn` per PgBouncer instance ≥ backend replicas × worker processes ÷ PgBouncer
   replicas, plus headroom;
@@ -92,4 +123,5 @@ PgBouncer is single-threaded; scale it with replicas rather than with CPU per in
 
 ## Switching back
 
-Set `DB_PERSISTENT_CONNECTIONS=false` (Helm: `config.db.persistentConnections: false`) and restart.
+Set `DB_PERSISTENT_CONNECTIONS=false` (Helm: `config.db.persistentConnections: false`), remove `DB_HOST` or set it
+to `db`, remove the `pgbouncer` profile, and restart. No data is stored in PgBouncer.
