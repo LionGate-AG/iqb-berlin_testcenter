@@ -183,6 +183,17 @@ class TestDAOTest extends TestCase {
     $this->assertEquals($resultAfterUpdate, $resultFromGetAfterUpdate);
   }
 
+  function test_updateTestState_withGivenRow() {
+    $patch = [['key' => 'some_entry', 'content' => 'some_content', 'timeStamp' => 1]];
+
+    // the given row is used as it is, the table's state (CURRENT_UNIT_ID) is not read again
+    $result = $this->dbc->updateTestState(1, $patch, ['laststate' => '{"FROM_ROW":"x"}']);
+
+    $expected = ['FROM_ROW' => 'x', 'some_entry' => 'some_content'];
+    $this->assertEquals($expected, $result);
+    $this->assertEquals($expected, $this->dbc->getTestState(1));
+  }
+
   function test_updateUnitState() {
     $testState = [
       [

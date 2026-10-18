@@ -3,9 +3,14 @@
 declare(strict_types=1);
 
 class SessionDAO extends DAO {
-  public function getToken(string $tokenString, array $requiredTypes): AuthToken {
-    $tokenInfo = $this->_(
-      'select
+  /**
+   * One SELECT per session type. When a route accepts several types and the token string exists in more than one
+   * table, this order decides which row wins.
+   *
+   * @var array<string, string>
+   */
+  private const array TOKEN_QUERIES = [
+    'admin' => 'select
                     admin_sessions.token,
                     users.id,
                     \'admin\' as "type",
@@ -16,9 +21,8 @@ class SessionDAO extends DAO {
                 from admin_sessions
                      left join users on (users.id = admin_sessions.user_id)
                 where
-                    admin_sessions.token = :token
-            union
-                select
+                    admin_sessions.token = :token',
+    'person' => 'select
                     person_sessions.token,
                     person_sessions.id as "id",
                     \'person\' as "type",
@@ -30,9 +34,8 @@ class SessionDAO extends DAO {
                      left join login_sessions on (person_sessions.login_sessions_id = login_sessions.id)
                      left join logins on (logins.name = login_sessions.name)
                 where
-                    person_sessions.token = :token
-            union
-                select
+                    person_sessions.token = :token',
+    'login' => 'select
                     token,
                     login_sessions.id as "id",
                     \'login\' as "type",
@@ -43,8 +46,25 @@ class SessionDAO extends DAO {
                 from login_sessions
                      left join logins on (logins.name = login_sessions.name)
                 where
-                    login_sessions.token = :token
-            limit 1',
+                    login_sessions.token = :token'
+  ];
+
+  /**
+   * Resolves a token, searching only the session tables of the types the route accepts. This runs on every
+   * authenticated request, and most routes accept a single type, which then needs no UNION. A token of a type the
+   * route does not accept is therefore not found at all and answered like an unknown one.
+   *
+   * @param string[] $requiredTypes
+   */
+  public function getToken(string $tokenString, array $requiredTypes): AuthToken {
+    $queries = array_intersect_key(self::TOKEN_QUERIES, array_flip($requiredTypes));
+
+    if (!$queries) {
+      throw new HttpError("Invalid token: `$tokenString`", 403);
+    }
+
+    $tokenInfo = $this->_(
+      implode("\n            union\n                ", $queries) . "\n            limit 1",
       [':token' => $tokenString]
     );
 
@@ -54,12 +74,6 @@ class SessionDAO extends DAO {
 
     if ($tokenInfo['workspaceId'] == null) {
       throw new HttpError("Login removed: `$tokenString`", 410);
-    }
-
-    if (!in_array($tokenInfo["type"], $requiredTypes)) {
-      throw new HttpError("Token `$tokenString` of "
-        . "type `{$tokenInfo["type"]}` has wrong type - `"
-        . implode("` or `", $requiredTypes) . "` required.", 403);
     }
 
     TimeStamp::checkExpiration(0, TimeStamp::fromSQLFormat($tokenInfo['validTo']));
@@ -152,18 +166,33 @@ class SessionDAO extends DAO {
   }
 
   public function createLoginSession(Login $login): LoginSession {
-    $loginToken = Token::generate('login', $login->getName());
     $groupToken = $this->getOrCreateGroupToken(
       $login->getWorkspaceId(),
       $login->getGroupName(),
       $login->getGroupLabel()
     );
 
-    // We don't check for existence of the sessions before inserting it because timing issues occurred: If the same
-    // login was requested two times at the same moment it could happen that it was created twice.
+    // Nearly every login after the first finds its session unchanged. Reading it first answers that case without
+    // the upsert below, which would lock the row, rewrite group_name and re-check its foreign keys although nothing
+    // changes.
+    /** @var array{id: int, token: string, group_name: string}|null $existing */
+    $existing = $this->_(
+      'SELECT id, token, group_name FROM login_sessions WHERE name = :name AND workspace_id = :ws',
+      [
+        ':name' => $login->getName(),
+        ':ws' => $login->getWorkspaceId()
+      ]
+    );
 
+    if ($existing and ($existing['group_name'] === $login->getGroupName())) {
+      return new LoginSession($existing['id'], $existing['token'], $groupToken, $login);
+    }
+
+    // A new or regrouped session goes through this single statement, never through the read above: if the same
+    // login is requested twice at the same moment, the unique key lets only one session come into existence.
     // returning hands back the row in both cases: the one just inserted, or the one that was already
     // there - which then keeps its original token and only gets its group refreshed (see #766).
+    $loginToken = Token::generate('login', $login->getName());
     $session = $this->_(
       'insert into login_sessions (token, name, workspace_id, group_name)
             values(:token, :name, :ws, :group_name)
@@ -470,19 +499,13 @@ class SessionDAO extends DAO {
 
   public function groupTokenExists(int $workspaceId, string $groupTokenString): bool {
     $res = $this->_(
-      'select
-            count(token) as count
-          from
-            login_session_groups
-            left join logins on login_session_groups.group_name = logins.group_name
-          where
-            token = ? and login_session_groups.workspace_id = ?',
+      'SELECT 1 AS found FROM login_session_groups WHERE token = ? AND workspace_id = ?',
       [
         $groupTokenString,
         $workspaceId
       ]
     );
-    return !!$res['count'];
+    return $res !== null;
   }
 
   public function getTestStatus(string $personToken, string $bookletName): array {
@@ -538,18 +561,24 @@ class SessionDAO extends DAO {
     return isset($codes2booklets[$code]) and in_array($bookletName, $codes2booklets[$code]);
   }
 
-  public function ownsTest(string $personToken, string $testId): bool {
+  /**
+   * The test, if the given person session owns it. Checks ownership only, not whether the test is locked.
+   *
+   * Keyed by the person session's id, which the token check has already resolved, so no join on person_sessions is
+   * needed. The row carries the test's state, so that handlers can use it instead of reading the same row again.
+   *
+   * @return array{laststate: ?string}|null
+   */
+  public function getOwnedTest(int $personId, int $testId): ?array {
+    /** @var array{laststate: ?string}|null $test */
     $test = $this->_(
-      'select tests.locked from tests
-              inner join person_sessions on person_sessions.id = tests.person_id
-              where person_sessions.token=:token and tests.id=:testId',
+      'SELECT laststate FROM tests WHERE id = :testId AND person_id = :personId',
       [
-        ':token' => $personToken,
-        ':testId' => $testId
+        ':testId' => $testId,
+        ':personId' => $personId
       ]
     );
-
-    return !!$test;
+    return $test;
   }
 
   /**

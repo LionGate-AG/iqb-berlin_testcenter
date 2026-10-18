@@ -374,8 +374,12 @@ class TestDAO extends DAO {
   }
 
   // TODO use data-collection class for $statePatch (key-vale pairs)
-  public function updateTestState(int $testId, array $statePatch): array {
-    $testData = $this->_(
+  /**
+   * @param array{laststate: ?string}|null $testRow the test's row when the caller has just read it (see
+   *   SessionDAO::getOwnedTest), which saves reading it again; null reads it here
+   */
+  public function updateTestState(int $testId, array $statePatch, ?array $testRow = null): array {
+    $testData = $testRow ?? $this->_(
       'select tests.laststate from tests where tests.id=:testId',
       [
         ':testId' => $testId

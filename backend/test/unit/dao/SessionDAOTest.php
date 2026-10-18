@@ -214,6 +214,16 @@ class SessionDAOTest extends TestCase {
     $this->assertEquals($expectation, $result);
   }
 
+  function test_getToken_severalTypes() {
+    $result = $this->dbc->getToken('person-token', ['login', 'person', 'admin']);
+    $this->assertEquals('person', $result->getType());
+  }
+
+  function test_getToken_noKnownType() {
+    $this->expectException(HttpError::class);
+    $this->dbc->getToken('person-token', ['unknown']);
+  }
+
   function test_getToken_wrongToken() {
     $this->expectException(HttpError::class);
     $this->dbc->getToken('not-existing', ['admin']);
@@ -504,7 +514,7 @@ class SessionDAOTest extends TestCase {
     );
 
     $expectation = new LoginSession(
-      10, // 9th row, but MySQL give it ID 10
+      9, // the repeated login above found its session and inserted nothing, so it consumed no id
       'static:login:yet_another_one',
       'group-token', // as given in testdata.sql
       $anotherLogin
@@ -672,12 +682,20 @@ class SessionDAOTest extends TestCase {
     $this->assertTrue($result);
   }
 
-  public function test_ownsTest() {
-    $result = $this->dbc->ownsTest('person-token', "1");
-    $this->assertTrue($result);
+  public function test_getOwnedTest(): void {
+    // person session 1 ('person-token') owns test 1, person session 4 ('person-of-future-login-token') owns none
+    $result = $this->dbc->getOwnedTest(1, 1);
+    $this->assertNotNull($result);
+    $this->assertSame(['CURRENT_UNIT_ID' => 'UNIT_1'], JSON::decode($result['laststate'], true));
 
-    $result = $this->dbc->ownsTest('person-of-future-login-token', "1");
-    $this->assertFalse($result);
+    $this->assertNull($this->dbc->getOwnedTest(4, 1));
+    $this->assertNull($this->dbc->getOwnedTest(1, 99999));
+  }
+
+  public function test_groupTokenExists(): void {
+    $this->assertTrue($this->dbc->groupTokenExists(1, 'group-token'));
+    $this->assertFalse($this->dbc->groupTokenExists(2, 'group-token'));
+    $this->assertFalse($this->dbc->groupTokenExists(1, 'not-existing'));
   }
 
   public function test_getOrCreateGroupToken(): void {
