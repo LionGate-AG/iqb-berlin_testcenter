@@ -12,6 +12,7 @@
 
 ## Technisches
 - Der Brute-Force-Schutz (`BRUTE_FORCE_PROTECTION` in `.env.prod-template`) ist bei Neuinstallationen via docker-compose ausgeschaltet.
+- Datenbank-Patch `19.1.0`: Vier Indizes auf `login_sessions`, `person_sessions` und `tests` entfallen (`index_fk_login_workspace`, `index_fk_logins`, `index_fk_person_login`, `index_fk_booklet_person`). Jeder von ihnen deckte nur die erste Spalte eines anderen Index oder Unique-Constraints derselben Tabelle ab und verlangsamte so jede Anmeldung und jeden Teststart. `make testcenter-update` spielt den Patch beim Neustart ein; wer manuell aktualisiert, muss vor dem Start `make testcenter-init` ausführen, sonst startet das Backend nicht.
 
 # 19.0.0
 

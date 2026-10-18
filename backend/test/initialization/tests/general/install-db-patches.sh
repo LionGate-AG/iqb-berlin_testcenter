@@ -48,11 +48,11 @@ source backend/test/initialization/functions/functions.sh
 
   echo_h1 "The schema version names the newest applied patch, not the application version"
 
-  # Nothing is left to apply here: 7.0.0 and both 10.0.999x patches are in, and 1000.0.0 is still a
-  # future version even at 99.0.0. So the stamp keeps the 10.0.9999 the previous step reached,
-  # however far the application version moves away from it.
+  # Nothing is left to apply here: 7.0.0 and both 10.0.999x patches are in, and 1000.0.0 as well as the
+  # real patches in patches.d (all newer than 10.x) are still future versions at 10.5.0. So the stamp
+  # keeps the 10.0.9999 the previous step reached, although the application version has moved past it.
 
-  fake_version 99.0.0
+  fake_version 10.5.0
 
   php backend/initialize.php \
     --dont_create_sample_data \
