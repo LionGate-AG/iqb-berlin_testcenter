@@ -11,6 +11,7 @@
 
 ## Technisches
 - Der Brute-Force-Schutz (`BRUTE_FORCE_PROTECTION` in `.env.prod-template`) ist bei Neuinstallationen via docker-compose ausgeschaltet.
+- Das nginx im Frontend-Image erlaubt 16.384 Verbindungen pro Worker (bisher 1.024) und entsprechend viele offene Dateien. Da jede weitergeleitete Verbindung zwei Plätze belegt, schloss ein Frontend-Container bisher ab etwa 1.000 gleichzeitigen Testteilnehmer:innen neue Verbindungen ohne Antwort.
 
 # 19.0.0
 

@@ -49,6 +49,21 @@ FROM ${REGISTRY_PATH}nginxinc/nginx-unprivileged:stable AS prod
 USER root
 RUN chown -R nginx:root /usr/share/nginx/html
 
+# This nginx proxies all traffic, the /api requests and the broadcaster WebSockets, and
+# every proxied connection takes two worker_connections (client and upstream side). The
+# stock 1024 per worker leaves a pod at ~1,000 concurrent test takers; beyond that nginx
+# silently closes new connections while its CPU stays idle. worker_connections and
+# worker_rlimit_nofile live in the base image's main nginx.conf, which frontend/nginx.conf
+# (a server block) cannot reach, hence the sed. nofile covers ~2 fds per connection.
+# `nginx -t` runs as root and leaves a root-owned /tmp/nginx.pid in the image, which the
+# unprivileged runtime user cannot overwrite, so it is removed again.
+RUN sed -i \
+      -e 's/^worker_processes\(.*\)$/worker_rlimit_nofile 40960;\nworker_processes\1/' \
+      -e 's/worker_connections  *[0-9]\+;/worker_connections 16384;/' \
+      /etc/nginx/nginx.conf \
+ && nginx -t \
+ && rm -f /tmp/nginx.pid
+
 USER nginx
 COPY --chown=nginx:root --from=base /usr/src/testcenter/frontend/dist/browser /usr/share/nginx/html
 COPY --chown=nginx:root frontend/nginx.conf /etc/nginx/templates/default.conf.template
