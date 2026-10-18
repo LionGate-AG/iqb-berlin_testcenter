@@ -8,6 +8,7 @@
 - Bei der Anmeldung mit Kennwort, als Administrator:in und mit Code bleibt die Anmeldeschaltfläche während der gesamten ALTCHA-Prüfung deaktiviert, bis der Server die Prüfung abgeschlossen hat. Mehrfaches Absenden während der Prüfung wird verhindert.
 - `make testcenter-update` endet, wenn man nach einem fehlgeschlagenen Daten-Backup oder nach übersprungenen Migrationsskripten das Fortfahren ablehnt. Bisher meldete das Skript zwar „update script finished“, spielte die neue Version aber trotzdem ein.
 - API: Berichte (`GET /workspace/{ws_id}/report/{type}`) ohne den optionalen Parameter `dataIds` umfassen alle Gruppen bzw. alle System-Checks des Arbeitsbereichs. Bisher brachen Log-, Antwort- und Review-Berichte mit einem SQL-Fehler ab, und der System-Check-Bericht war leer. (#1614)
+- Neu angelegte Personen-Sitzungen, Benutzer:innen, Arbeitsbereiche und Assets erhalten ihre ID aus derselben Datenbankanweisung (`returning id`). Bisher wurde sie mit einer zweiten Abfrage (`lastval()`) ermittelt, die hinter einem Connection-Pooler im Transaktionsmodus (z. B. PgBouncer) auf einer anderen Verbindung laufen und die ID einer fremden Sitzung liefern konnte.
 
 ## Technisches
 - Der Brute-Force-Schutz (`BRUTE_FORCE_PROTECTION` in `.env.prod-template`) ist bei Neuinstallationen via docker-compose ausgeschaltet.
