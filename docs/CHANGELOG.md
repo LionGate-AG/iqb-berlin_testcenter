@@ -11,6 +11,7 @@
 
 ## Technisches
 - Der Brute-Force-Schutz (`BRUTE_FORCE_PROTECTION` in `.env.prod-template`) ist bei Neuinstallationen via docker-compose ausgeschaltet.
+- Das Backend wartet höchstens 1 Sekunde auf den Verbindungsaufbau zum Broadcast-Service und insgesamt höchstens 2 Sekunden auf dessen Antwort (bisher 5 Sekunden), damit ein nicht erreichbarer oder überlasteter Broadcast-Service keine PHP-Prozesse blockiert.
 
 # 19.0.0
 
