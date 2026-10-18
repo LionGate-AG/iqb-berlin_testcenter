@@ -7,6 +7,7 @@ class SystemConfig {
   public static string $database_password;
   public static int $database_port;
   public static string $database_user;
+  public static bool $database_persistentConnections = false;
   public static string $fileServer_url = "";
   public static string $broadcaster_url = "";
   public static string $cacheServer_host = "";
@@ -82,6 +83,7 @@ class SystemConfig {
     $config['database']['port'] = self::stringEnv('DB_PORT');
     $config['database']['user'] = self::stringEnv('DB_USER');
     $config['database']['password'] = self::stringEnv('DB_PASSWORD');
+    $config['database']['persistentConnections'] = self::boolEnv('DB_PERSISTENT_CONNECTIONS');
 
     $config['password']['salt'] = self::stringEnv('PASSWORD_SALT');
     $config['password']['min_length'] = (int) self::stringEnv('PASSWORD_MIN_LENGTH');

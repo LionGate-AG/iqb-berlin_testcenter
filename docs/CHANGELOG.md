@@ -12,6 +12,8 @@
 
 ## Technisches
 - Der Brute-Force-Schutz (`BRUTE_FORCE_PROTECTION` in `.env.prod-template`) ist bei Neuinstallationen via docker-compose ausgeschaltet.
+- Neue Variable `DB_PERSISTENT_CONNECTIONS` (Helm: `config.db.persistentConnections`, Standard `false`): Jeder Backend-Worker hält seine Datenbankverbindung über Anfragen hinweg offen, statt für jede Anfrage eine neue aufzubauen. Jeder Worker belegt dann dauerhaft eine Verbindung; Backend-Instanzen × Worker müssen unter `max_connections` von PostgreSQL (500) bleiben, sonst gehört ein Connection-Pooler davor.
+- Das Backend verwendet keine benannten Prepared Statements mehr (`PDO::PGSQL_ATTR_DISABLE_PREPARES`). Damit funktioniert es hinter einem Connection-Pooler im Transaktionsmodus wie PgBouncer. Parameter werden weiterhin vom Datenbankserver gebunden.
 
 # 19.0.0
 

@@ -76,6 +76,11 @@ spec:
               value: '{{ .Release.Name }}-db'
             - name: DB_PORT
               value: '5432'
+            - name: DB_PERSISTENT_CONNECTIONS
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ .Release.Name }}-backend-config
+                  key: DB_PERSISTENT_CONNECTIONS
             - name: DB_DATABASE
               value: {{ .Values.config.db.database | quote }}
             - name: DB_USER

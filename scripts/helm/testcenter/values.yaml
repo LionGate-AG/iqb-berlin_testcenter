@@ -105,6 +105,11 @@ config:
   db:
     # -- Database that PostgreSQL creates and the backend uses
     database: iqb_tba_testcenter
+    # -- Keep one database connection per backend worker process open across requests
+    # Saves the connection setup on every request, but every worker of every backend replica then holds a
+    # connection while it exists, also when idle. Keep replicas x workers below PostgreSQL's max_connections (500),
+    # or put a connection pooler such as PgBouncer in front of PostgreSQL.
+    persistentConnections: false
 
   fileServer:
     # -- Enable Redis caching for file server operations (experimental!)
