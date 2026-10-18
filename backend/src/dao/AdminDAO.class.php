@@ -119,6 +119,8 @@ class AdminDAO extends DAO {
         ':group_name' => $groupName
       ]
     );
+    // The delete cascades to the group's login and person sessions. Their tokens are not known here.
+    CacheService::flushAuthTokens();
   }
 
   public function deleteResultDataByPersonAndBooklet(int $workspaceId, array $setsToDelete): void {

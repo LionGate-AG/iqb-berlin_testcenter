@@ -63,7 +63,12 @@ class SessionDAO extends DAO {
       throw new HttpError("Invalid token: `$tokenString`", 403);
     }
 
-    $tokenInfo = $this->_(
+    // Only person tokens are cached (see CacheService). A miss, a switched-off cache and an unreachable Redis all
+    // return null and lead to the query below.
+    $tokenInfo = isset($queries['person']) ? CacheService::getAuthTokenRow($tokenString) : null;
+    $servedFromCache = ($tokenInfo !== null);
+
+    $tokenInfo ??= $this->_(
       implode("\n            union\n                ", $queries) . "\n            limit 1",
       [':token' => $tokenString]
     );
@@ -76,7 +81,13 @@ class SessionDAO extends DAO {
       throw new HttpError("Login removed: `$tokenString`", 410);
     }
 
-    TimeStamp::checkExpiration(0, TimeStamp::fromSQLFormat($tokenInfo['validTo']));
+    $validTo = TimeStamp::fromSQLFormat($tokenInfo['validTo']);
+    TimeStamp::checkExpiration(0, $validTo);
+
+    // Stored only after all checks have passed, so a row that is rejected is never cached.
+    if (!$servedFromCache and ($tokenInfo['type'] === 'person')) {
+      CacheService::storeAuthTokenRow($tokenString, $tokenInfo, $validTo);
+    }
 
     return new AuthToken(
       $tokenInfo['token'],
@@ -324,6 +335,10 @@ class SessionDAO extends DAO {
               ':token' => $token
             ]
           );
+          // the previous token is no longer valid and must not be served from the cache
+          if (is_string($personSession['token'])) {
+            CacheService::invalidateAuthToken($personSession['token']);
+          }
         }
         return new PersonSession(
           $loginSession,
@@ -463,6 +478,12 @@ class SessionDAO extends DAO {
   }
 
   public function getOrCreateGroupToken(int $workspaceId, string $groupName, string $groupLabel): string {
+    // A group token does not change while its row exists; the cache is flushed whenever rows are deleted.
+    $cachedGroupToken = CacheService::getGroupToken($workspaceId, $groupName);
+    if ($cachedGroupToken !== null) {
+      return $cachedGroupToken;
+    }
+
     $newGroupToken = Token::generate('group', $groupName);
     $this->_(
       'insert into login_session_groups (group_name, workspace_id, group_label, token, last_modified)
@@ -478,6 +499,7 @@ class SessionDAO extends DAO {
     );
 
     if ($this->lastAffectedRows) {
+      CacheService::storeGroupToken($workspaceId, $groupName, $newGroupToken);
       return $newGroupToken;
     }
 
@@ -493,11 +515,17 @@ class SessionDAO extends DAO {
       throw new Exception("Could not retrieve group token for `{$groupName}`.");
     }
 
-    return $res['token'];
+    $groupToken = (string) $res['token'];
+    CacheService::storeGroupToken($workspaceId, $groupName, $groupToken);
+    return $groupToken;
   }
 
 
   public function groupTokenExists(int $workspaceId, string $groupTokenString): bool {
+    if (CacheService::isGroupTokenValid($workspaceId, $groupTokenString)) {
+      return true;
+    }
+
     $res = $this->_(
       'SELECT 1 AS found FROM login_session_groups WHERE token = ? AND workspace_id = ?',
       [
@@ -505,7 +533,11 @@ class SessionDAO extends DAO {
         $workspaceId
       ]
     );
-    return $res !== null;
+    $exists = ($res !== null);
+    if ($exists) {
+      CacheService::storeGroupTokenValid($workspaceId, $groupTokenString);
+    }
+    return $exists;
   }
 
   public function getTestStatus(string $personToken, string $bookletName): array {
@@ -663,6 +695,7 @@ class SessionDAO extends DAO {
   public function deletePersonToken(AuthToken $authToken): void {
     // we can not delete the session entirely, because this would delete the whole response data.
     $this->_("update person_sessions set token=null where token = :token", [':token' => $authToken->getToken()]);
+    CacheService::invalidateAuthToken($authToken->getToken());
   }
 
   /**

@@ -14,6 +14,8 @@ class SystemConfig {
   public static string $cacheServer_password = "";
   public static string $cacheServer_includeFiles = "";
   public static array $bruteForceProtection_sessions = [];
+  public static bool $cache_authToken = false;
+  public static int $cache_authTokenTtl;
   public static string $password_salt = "t";
   public static string $system_version;
   public static int $system_veronaMax;
@@ -102,6 +104,9 @@ class SystemConfig {
     $config['cacheServer']['password'] = self::stringEnv('REDIS_PASSWORD');
     $config['cacheServer']['includeFiles'] = self::boolEnv('REDIS_CACHE_FILES');
 
+    $config['cache']['authToken'] = self::boolEnv('TESTCENTER_CACHE_AUTH_TOKEN');
+    $config['cache']['authTokenTtl'] = self::intEnv('TESTCENTER_AUTH_TOKEN_TTL', 300);
+
     $sessions = self::stringEnv('BRUTE_FORCE_PROTECTION');
     $config['bruteForceProtection']['sessions'] = $sessions;
     $serverKey = self::stringEnv('SERVER_KEY');
@@ -144,6 +149,20 @@ class SystemConfig {
       return $default;
     }
     return in_array(strtolower($value), ['on', 'true', 'yes', 1]);
+  }
+
+  /**
+   * @throws Exception if the variable is set but is not a non-negative integer
+   */
+  private static function intEnv(string $name, int $default): int {
+    $value = getEnv($name);
+    if ($value === false or trim($value) === '') {
+      return $default;
+    }
+    if (!ctype_digit(trim($value))) {
+      throw new Exception("Environment-variable `$name` must be a non-negative integer, got `$value`.");
+    }
+    return (int) trim($value);
   }
 
   private static function stringEnv(string $name): string {
