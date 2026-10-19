@@ -67,6 +67,8 @@ RUN sed -i \
 USER nginx
 COPY --chown=nginx:root --from=base /usr/src/testcenter/frontend/dist/browser /usr/share/nginx/html
 COPY --chown=nginx:root frontend/nginx.conf /etc/nginx/templates/default.conf.template
+# target of the /fs/ proxy in nginx.conf; deployments without a file-server override it
+ENV FILE_SERVER_UPSTREAM=http://file-server:8080
 
 EXPOSE 8080
 
