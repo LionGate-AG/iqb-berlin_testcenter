@@ -8,6 +8,7 @@
 - Bei der Anmeldung mit Kennwort, als Administrator:in und mit Code bleibt die Anmeldeschaltfläche während der gesamten ALTCHA-Prüfung deaktiviert, bis der Server die Prüfung abgeschlossen hat. Mehrfaches Absenden während der Prüfung wird verhindert.
 - `make testcenter-update` endet, wenn man nach einem fehlgeschlagenen Daten-Backup oder nach übersprungenen Migrationsskripten das Fortfahren ablehnt. Bisher meldete das Skript zwar „update script finished“, spielte die neue Version aber trotzdem ein.
 - API: Berichte (`GET /workspace/{ws_id}/report/{type}`) ohne den optionalen Parameter `dataIds` umfassen alle Gruppen bzw. alle System-Checks des Arbeitsbereichs. Bisher brachen Log-, Antwort- und Review-Berichte mit einem SQL-Fehler ab, und der System-Check-Bericht war leer. (#1614)
+- Meldungen des Broadcasters über Verbindungsabbrüche (`connection-lost`) erreichen das Backend. Bisher fehlte in der vom Backend erzeugten Adresse das Präfix `/api`, weil das nginx des Frontends `/api` entfernt, ohne `X-Forwarded-Prefix` zu setzen; die Meldungen endeten mit 404.
 
 ## Technisches
 - Der Brute-Force-Schutz (`BRUTE_FORCE_PROTECTION` in `.env.prod-template`) ist bei Neuinstallationen via docker-compose ausgeschaltet.
