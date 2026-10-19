@@ -99,6 +99,7 @@ services:
       - ./backend/config/vhost.conf:/etc/apache2/sites-available/vhost.conf
       - ./backend/check-db-compatibility.php:/var/www/testcenter/backend/check-db-compatibility.php
       - ./backend/drain-logs.php:/var/www/testcenter/backend/drain-logs.php
+      - ./backend/drain-test-states.php:/var/www/testcenter/backend/drain-test-states.php
       - ./backend/index.php:/var/www/testcenter/backend/index.php
       - ./backend/initialize.php:/var/www/testcenter/backend/initialize.php
       - ./backend/routes.php:/var/www/testcenter/backend/routes.php
@@ -132,6 +133,18 @@ services:
         REGISTRY_PATH: ${DOCKERHUB_PROXY}
     volumes:
       - ./backend/drain-logs.php:/var/www/testcenter/backend/drain-logs.php
+      - ./backend/src:/var/www/testcenter/backend/src
+    networks:
+      - testcenter
+
+  state-drainer:
+    build:
+      dockerfile: backend/Dockerfile
+      target: dev
+      args:
+        REGISTRY_PATH: ${DOCKERHUB_PROXY}
+    volumes:
+      - ./backend/drain-test-states.php:/var/www/testcenter/backend/drain-test-states.php
       - ./backend/src:/var/www/testcenter/backend/src
     networks:
       - testcenter

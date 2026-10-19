@@ -15,3 +15,4 @@ data:
   TESTCENTER_CACHE_AUTH_TOKEN: {{ .Values.config.backend.cacheAuthToken | quote }}
   TESTCENTER_AUTH_TOKEN_TTL: {{ .Values.config.backend.authTokenTtl | quote }}
   TESTCENTER_ASYNC_TEST_LOGS: {{ .Values.config.backend.asyncTestLogs | quote }}
+  TESTCENTER_BUFFER_TEST_STATE: {{ .Values.config.backend.bufferTestState | quote }}

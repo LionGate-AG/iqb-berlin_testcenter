@@ -128,6 +128,11 @@ spec:
                 configMapKeyRef:
                   name: {{ .Release.Name }}-backend-config
                   key: TESTCENTER_ASYNC_TEST_LOGS
+            - name: TESTCENTER_BUFFER_TEST_STATE
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ .Release.Name }}-backend-config
+                  key: TESTCENTER_BUFFER_TEST_STATE
             - name: ADMIN_INIT_PASSWORD
               valueFrom:
                 secretKeyRef:

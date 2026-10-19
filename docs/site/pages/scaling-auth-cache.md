@@ -14,6 +14,9 @@ The cache is switched off by default. Small and medium installations do not need
   with `410`. The cache is only consulted on routes that accept person tokens; on all other routes a person token is
   rejected with `403` as before.
 - **Group tokens** - the token of each login group, used at login and to authorize downloads of test resources.
+- **Owner and state of tests** - checked and read by every request on a running test. See
+  [Scaling: Test-State Buffer](./scaling-test-state-buffer.md), which also describes how these entries are kept
+  current and when they are dropped.
 
 Not cached:
 
