@@ -200,6 +200,8 @@ class CacheServiceTest extends TestCase {
     CacheService::reset();
 
     $this->assertNull((new ReflectionProperty(CacheService::class, 'redis'))->getValue());
+  }
+
   function test_presignedUrlCache_isOffByDefault(): void {
     putenv('TESTCENTER_CACHE_PRESIGNED_URLS');
     SystemConfig::readEnvironment();
