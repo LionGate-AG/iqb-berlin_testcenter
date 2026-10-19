@@ -82,6 +82,26 @@ The broadcaster reads these environment variables:
 | `REDIS_PORT` | `6379` | its port |
 | `REDIS_PASSWORD` | empty | its password; empty means no authentication |
 
+### Helm chart
+
+The chart deploys `broadcaster-redis` (deployment, service, secret) and points the broadcaster at it. The
+password is `secret.broadcasterRedis.redisPassword`, by default the same value as the cache service's.
+
+| Value | Default | Meaning |
+|---|---|---|
+| `deployment.broadcaster.replicas` | `1` | number of instances while autoscaling is off |
+| `deployment.broadcaster.autoscaling.enabled` | `false` | scale the broadcaster with a HorizontalPodAutoscaler on CPU (needs the metrics-server) |
+| `deployment.broadcaster.autoscaling.minReplicas` / `maxReplicas` | `2` / `5` | bounds of the autoscaler |
+| `deployment.broadcaster.autoscaling.targetCPUUtilizationPercentage` | `70` | average CPU target |
+| `deployment.broadcaster.terminationGracePeriodSeconds` | `30` | must exceed the preStop pause (5 s) plus the shutdown grace (5 s) |
+| `deployment.broadcasterRedis.resources` | 100m / 128Mi requested | resources of the Redis pod |
+
+A PodDisruptionBudget (`minAvailable: 1`) is created whenever two or more instances run, so that node drains evict
+them one at a time. The readiness probe calls `/health`, which only pings Redis.
+
+On shutdown an instance first waits 5 seconds (preStop) so that it is removed from the service endpoints, then
+closes its sockets and waits another 5 seconds. The clients reconnect to the remaining instances.
+
 ## Sizing
 
 - **Instances.** One instance accepts at most 10,000 WebSockets. In a load test with 100,000 concurrent test takers,

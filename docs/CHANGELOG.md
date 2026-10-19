@@ -11,7 +11,7 @@
 
 ## Technisches
 - Der Brute-Force-Schutz (`BRUTE_FORCE_PROTECTION` in `.env.prod-template`) ist bei Neuinstallationen via docker-compose ausgeschaltet.
-- Der Broadcast-Service hält seinen Zustand in einem eigenen Redis-Dienst `broadcaster-redis` und lässt sich dadurch mit mehreren Instanzen betreiben. docker-compose startet den neuen Dienst mit; er verwendet dasselbe `REDIS_PASSWORD` wie der Cache-Dienst. Der neue Endpunkt `/health` des Broadcast-Service eignet sich als Readiness-Prüfung. Details: `docs/site/pages/scaling-broadcaster.md`.
+- Der Broadcast-Service hält seinen Zustand in einem eigenen Redis-Dienst `broadcaster-redis` und lässt sich dadurch mit mehreren Instanzen betreiben. docker-compose startet den neuen Dienst mit; er verwendet dasselbe `REDIS_PASSWORD` wie der Cache-Dienst. Das Helm-Chart enthält `broadcaster-redis` und kann den Broadcast-Service mit mehreren Replikas (`deployment.broadcaster.replicas`) oder per HorizontalPodAutoscaler (`deployment.broadcaster.autoscaling`, standardmäßig aus) betreiben; ab zwei Replikas legt es ein PodDisruptionBudget an. Die Readiness-Probe verwendet den neuen Endpunkt `/health`. Details: `docs/site/pages/scaling-broadcaster.md`.
 - Das Backend wartet höchstens 1 Sekunde auf den Verbindungsaufbau zum Broadcast-Service und insgesamt höchstens 2 Sekunden auf dessen Antwort (bisher 5 Sekunden), damit ein nicht erreichbarer oder überlasteter Broadcast-Service keine PHP-Prozesse blockiert.
 
 # 19.0.0
