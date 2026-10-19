@@ -12,6 +12,7 @@
 - Objektspeicher (`STORAGE_DRIVER=s3`): Fehlen `S3_REGION` oder `S3_PRESIGN_TTL` oder sind sie leer, gelten ihre Standardwerte `us-east-1` bzw. `3600`. Bisher wurden die Standardwerte nie angewendet: Ohne `S3_PRESIGN_TTL` startete das Backend nicht, ohne `S3_REGION` lief es mit leerer Region. Ein `S3_PRESIGN_TTL`, das keine nicht-negative ganze Zahl ist, beendet den Start mit einer Fehlermeldung.
 - Objektspeicher (`STORAGE_DRIVER=s3`): Der Download von Arbeitsbereichsdateien und die Weiterleitung auf Testdateien tragen wie alle anderen Dateiantworten `Cache-Control: private`, sodass gemeinsam genutzte Caches (z. B. ein CDN) sie nicht ohne erneute Token-Prüfung weitergeben.
 - Objektspeicher (`STORAGE_DRIVER=s3`): Downloads aus dem Objektspeicher kommen unkomprimiert. Bisher komprimierten manche Objektspeicher (z. B. der von STACKIT) jede Datei beim Download, sobald der Browser gzip akzeptierte. Die Antwort kam dann ohne Längenangabe und unvorhersehbar langsam: Ein Download von 43,8 MB dauerte über 20 Minuten statt weniger Sekunden.
+- Helm: Ist der File-Server abgeschaltet (`config.backend.fileServerEnabled: false`, z. B. mit Objektspeicher), startet das Frontend. Bisher brach nginx den Start ab, weil es den Namen `file-server` des `/fs/`-Proxys nicht auflösen konnte.
 
 ## Technisches
 - Der Brute-Force-Schutz (`BRUTE_FORCE_PROTECTION` in `.env.prod-template`) ist bei Neuinstallationen via docker-compose ausgeschaltet.
@@ -19,6 +20,7 @@
 - Neue Umgebungsvariablen `TESTCENTER_CACHE_AUTH_TOKEN` (Standard `false`) und `TESTCENTER_AUTH_TOKEN_TTL` (Sekunden, Standard `300`; Helm: `config.backend.cacheAuthToken` und `config.backend.authTokenTtl`): Eingeschaltet beantwortet das Backend die Prüfung der Sitzungs-Token von Testpersonen und die Gruppen-Token aus dem Cache-Service (Redis) statt aus der Datenbank. Das entlastet die Datenbank bei sehr vielen gleichzeitigen Testpersonen. Ist der Cache-Service nicht erreichbar, fragt das Backend wie bisher die Datenbank. Siehe „Scaling: Auth-Token Cache“ in der Dokumentation.
 - Das Backend hält seine Verbindung zum Cache-Service (Redis) über Anfragen hinweg offen, eine je Backend-Prozess.
 - Neue Umgebungsvariable `TESTCENTER_CACHE_PRESIGNED_URLS` (Standard `false`; Helm: `objectStore.cachePresignedUrls`): Eingeschaltet legt das Backend bei `STORAGE_DRIVER=s3` die vorsignierten Download-URLs im Cache-Service (Redis) ab, sodass eine Dateianfrage einer Testperson keine Rückfrage beim Objektspeicher mehr auslöst. Ein Eintrag gilt 300 Sekunden kürzer als `S3_PRESIGN_TTL`; das Löschen von Dateien leert den Cache. Siehe „Scaling: Object Store“ in der Dokumentation.
+- Das Frontend-Image liest das Ziel des `/fs/`-Proxys aus der neuen Umgebungsvariable `FILE_SERVER_UPSTREAM` (Standard `http://file-server:8080`). Das Helm-Chart setzt sie abhängig von `config.backend.fileServerEnabled`; wer das Frontend-Image ohne File-Server selbst betreibt, setzt sie auf eine Adresse, auf der nichts lauscht (z. B. `http://127.0.0.1:1`).
 
 # 19.0.0
 

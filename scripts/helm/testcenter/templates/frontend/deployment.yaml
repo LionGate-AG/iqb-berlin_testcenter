@@ -47,6 +47,10 @@ spec:
             # undefined env var leaves a literal placeholder and nginx fails to start.
             - name: OBJECT_STORE_CSP_ORIGIN
               value: {{ if .Values.objectStore.enabled }}{{ .Values.objectStore.publicEndpoint | quote }}{{ else }}""{{ end }}
+            # Target of the /fs/ proxy in nginx.conf. Without a file-server it is an address nothing listens on:
+            # nginx resolves the target at start-up and would not start with an unknown host.
+            - name: FILE_SERVER_UPSTREAM
+              value: {{ if .Values.config.backend.fileServerEnabled }}"http://file-server:8080"{{ else }}"http://127.0.0.1:1"{{ end }}
           ports:
             - name: http-container
               containerPort: 8080
