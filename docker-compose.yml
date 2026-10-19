@@ -91,6 +91,9 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      pgbouncer:
+        condition: service_healthy
+        required: false
       cache-server:
         condition: service_started
     environment:
@@ -100,8 +103,10 @@ services:
       SERVER_KEY: ${SERVER_KEY}
       XML_SCHEMA_VALIDATION: ${XML_SCHEMA_VALIDATION:-}
       <<: [ *env-redis, *env-db ]
-      DB_HOST: db
+      # `pgbouncer` routes the backend through the optional PgBouncer service (profile `pgbouncer`).
+      DB_HOST: ${DB_HOST:-db}
       DB_PORT: 5432
+      DB_PERSISTENT_CONNECTIONS: ${DB_PERSISTENT_CONNECTIONS:-false}
       PASSWORD_SALT: ${PASSWORD_SALT}
       PASSWORD_MIN_LENGTH: ${PASSWORD_MIN_LENGTH}
       PASSWORD_PATTERN: ${PASSWORD_PATTERN}
@@ -152,6 +157,49 @@ services:
       test: [ "CMD", "pg_isready", "-U", "${DB_USER}", "-d", "${DB_DATABASE}", "-h", "127.0.0.1" ]
       start_period: 120s
       start_interval: 5s
+      interval: 90s
+      timeout: 30s
+      retries: 3
+    networks:
+      testcenter:
+
+  # Optional connection pooler, started with the compose profile `pgbouncer` and used by the backend when
+  # DB_HOST=pgbouncer. Transaction pooling: a server connection is held only for the duration of one transaction.
+  pgbouncer:
+    image: ${DOCKERHUB_PROXY}edoburu/pgbouncer:v1.25.2-p0
+    profiles: [ pgbouncer ]
+    <<: *restart-policy
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      # read by the image's entrypoint, which generates pgbouncer.ini and the auth file from them
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      LISTEN_PORT: 5432
+      AUTH_TYPE: scram-sha-256
+      POOL_MODE: transaction
+      # clients: one connection per backend worker process
+      MAX_CLIENT_CONN: 1000
+      # server connections to PostgreSQL, well below its max_connections
+      DEFAULT_POOL_SIZE: 50
+      MAX_DB_CONNECTIONS: 80
+      # a waiting client is a blocked backend worker: fail after 10 s instead of queueing
+      QUERY_WAIT_TIMEOUT: 10
+      IGNORE_STARTUP_PARAMETERS: extra_float_digits,options
+      LOG_CONNECTIONS: 0
+      LOG_DISCONNECTIONS: 0
+    # every client connection is a file descriptor; the default soft limit of 1024 would cap the clients
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    healthcheck:
+      test: [ "CMD", "pg_isready", "-h", "127.0.0.1", "-p", "5432", "-U", "${DB_USER}", "-d", "${DB_DATABASE}" ]
+      start_period: 30s
+      start_interval: 2s
       interval: 90s
       timeout: 30s
       retries: 3

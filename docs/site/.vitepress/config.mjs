@@ -32,6 +32,7 @@ export default defineConfig({
           { text: 'Scaling: PHP-FPM', link: '/pages/scaling-php-fpm' },
           { text: 'Scaling: Autoscaling', link: '/pages/scaling-autoscaling' }
           { text: 'Scaling: Broadcaster', link: '/pages/scaling-broadcaster' }
+          { text: 'Scaling: Connection Pooling', link: '/pages/scaling-connection-pooling' }
         ]
       },
       {

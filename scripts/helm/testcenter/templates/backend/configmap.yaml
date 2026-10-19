@@ -12,3 +12,4 @@ data:
   PASSWORD_PATTERN: {{ .Values.config.backend.passwordPattern | quote }}
   REQUIRE_LOGIN_PASSWORD: {{ .Values.config.backend.requireLoginPassword | quote }}
   XML_SCHEMA_VALIDATION: {{ .Values.config.backend.xmlSchemaValidation | quote }}
+  DB_PERSISTENT_CONNECTIONS: {{ .Values.config.db.persistentConnections | quote }}
