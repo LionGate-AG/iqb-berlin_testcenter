@@ -5,6 +5,7 @@
 
 class SessionChangeMessageArray implements IteratorAggregate {
 
+    /** @var SessionChangeMessage[] */
     protected $array = [];
 
     public function __construct(SessionChangeMessage... $messages) {
@@ -25,6 +26,7 @@ class SessionChangeMessageArray implements IteratorAggregate {
     }
 
 
+    /** @return SessionChangeMessage[] */
     public function asArray() : array {
 
         return $this->array;

@@ -1,196 +1,169 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { HttpService } from '@nestjs/axios';
-import { Subject } from 'rxjs';
+import { of, throwError } from 'rxjs';
+
 import { WebSocket } from 'ws';
 import { IncomingMessage } from 'http';
 import { Testee } from './testee.interface';
 import { WebsocketGateway } from '../common/websocket.gateway';
 import { Command } from '../command/command.interface';
 import { TesteeService } from './testee.service';
+import { RedisService } from '../redis/redis.service';
+import { FakeRedisService } from '../redis/redis.fake';
+import { KEY } from '../redis/redis.constants';
 
 let testeeService: TesteeService;
+let websocketGateway: WebsocketGateway;
+let redis: FakeRedisService;
+let mockHttp: { post: jest.Mock };
+
+const disconnectNotificationUri = 'http://www.disconnectURI.de';
+const mockTestee: Testee = { token: 'testeeToken', testId: 5, disconnectNotificationUri };
+const mockTestee2: Testee = { token: 'testeeToken2', testId: 6, disconnectNotificationUri };
+
+const makeWs = (): WebSocket => ({
+  send: jest.fn(), close: jest.fn(), on: jest.fn(), terminate: jest.fn(), readyState: 1
+} as unknown as WebSocket);
+
+// Connects a socket on this pod and lets its registration check (one Redis round trip) finish.
+const connect = async (token: string): Promise<void> => {
+  websocketGateway.handleConnection(makeWs(), { url: `x/ws?token=${token}` } as IncomingMessage);
+  await new Promise(resolve => setImmediate(resolve));
+};
+
+const build = async (): Promise<void> => {
+  redis = new FakeRedisService();
+  mockHttp = { post: jest.fn(() => of(undefined)) };
+  const module: TestingModule = await Test.createTestingModule({
+    providers: [TesteeService, WebsocketGateway, RedisService, HttpService]
+  })
+    .overrideProvider(RedisService).useValue(redis)
+    .overrideProvider(HttpService).useValue(mockHttp)
+    .compile();
+
+  testeeService = module.get<TesteeService>(TesteeService);
+  websocketGateway = module.get<WebsocketGateway>(WebsocketGateway);
+  await testeeService.onModuleInit();
+};
 
 describe('testeeService add and remove', () => {
-  const mockHTTPService = {
-  };
-
-  const mockTestee : Testee = {
-    token: 'testeeToken',
-    testId: 5,
-    disconnectNotificationUri: 'disconnectURI'
-  };
-
-  beforeEach(async () => {
-    const module: TestingModule = await Test.createTestingModule({
-      providers: [TesteeService, WebsocketGateway, HttpService]
-    }).overrideProvider(HttpService)
-      .useValue(mockHTTPService)
-      .compile();
-
-    testeeService = module.get<TesteeService>(TesteeService);
-  });
+  beforeEach(build);
 
   it('should be defined', () => {
     expect(testeeService).toBeDefined();
   });
 
-  it('should add a testee', () => {
-    const spyAllowToken = jest.spyOn(testeeService['websocketGateway'], 'allowToken');
-    testeeService.addTestee(mockTestee);
-    expect(testeeService['testees']['testeeToken']).toStrictEqual(mockTestee);
+  it('should add a testee (registration written to Redis)', async () => {
+    const spyAllowToken = jest.spyOn(websocketGateway, 'allowToken');
+    await testeeService.addTestee(mockTestee);
+    expect(await redis.hget<Testee>(KEY.testees, 'testeeToken')).toStrictEqual(mockTestee);
+    expect(await redis.smembers(KEY.testeeTestId(5))).toContain('testeeToken');
     expect(spyAllowToken).toHaveBeenCalledWith('testeeToken');
+    expect(redis.registrations.has('testeeToken')).toBe(true);
   });
 
-  it('should remove a testee', () => {
-    const spyDisconnectClient = jest.spyOn(testeeService['websocketGateway'], 'disconnectClient');
-    const spyLogger = jest.spyOn(testeeService['logger'], 'log');
+  it('should remove a testee', async () => {
+    const spyDisconnectClient = jest.spyOn(websocketGateway, 'disconnectClient');
 
-    testeeService.addTestee(mockTestee);
-    testeeService.removeTestee(mockTestee.token);
+    await testeeService.addTestee(mockTestee);
+    await testeeService.removeTestee(mockTestee.token);
 
-    expect(testeeService['testees']['testeeToken']).toBeUndefined();
-    expect(testeeService['testees']).toStrictEqual({});
-    expect(spyDisconnectClient).toHaveBeenCalled();
-    expect(spyLogger).toHaveBeenCalled();
+    expect(await redis.hget(KEY.testees, 'testeeToken')).toBeNull();
+    expect(await redis.smembers(KEY.testeeTestId(5))).toStrictEqual([]);
+    expect(spyDisconnectClient).toHaveBeenCalledWith('testeeToken');
   });
 
-  it('should remove a testee whose token expired without notifying the backend', () => {
+  it('should remove a testee whose token expired without notifying the backend', async () => {
     const spyNotifyDisconnection = jest.spyOn(testeeService, 'notifyDisconnection');
 
-    testeeService.addTestee(mockTestee);
-    testeeService['websocketGateway']['tokenExpired$'].next(mockTestee.token);
+    await testeeService.addTestee(mockTestee);
+    websocketGateway['tokenExpired$'].next(mockTestee.token);
+    await new Promise(resolve => setImmediate(resolve));
 
-    expect(testeeService['testees']).toStrictEqual({});
+    expect(await redis.hget(KEY.testees, 'testeeToken')).toBeNull();
+    expect(await redis.smembers(KEY.testeeTestId(5))).toStrictEqual([]);
     expect(spyNotifyDisconnection).not.toHaveBeenCalled();
   });
 });
 
 describe('testeeService', () => {
-  let postReturn = new Subject<void>();
-  const mockHTTPService = {
-    post: jest.fn(() => postReturn)
-  };
-  const mockTestee : Testee = {
-    token: 'testeeToken',
-    testId: 5,
-    disconnectNotificationUri: 'http://www.disconnectURI.de'
-  };
-
-  const mockTestee2 : Testee = {
-    token: 'testeeToken2',
-    testId: 6,
-    disconnectNotificationUri: 'http://www.disconnectURI.de'
-  };
-
-  const expectedTestees = [mockTestee, mockTestee2];
-
   beforeEach(async () => {
-    const module: TestingModule = await Test.createTestingModule({
-      providers: [TesteeService, WebsocketGateway, HttpService]
-    }).overrideProvider(HttpService)
-      .useValue(mockHTTPService)
-      .compile();
-
-    testeeService = module.get<TesteeService>(TesteeService);
-    testeeService.addTestee(mockTestee);
-    testeeService.addTestee(mockTestee2);
+    await build();
+    await testeeService.addTestee(mockTestee);
+    await testeeService.addTestee(mockTestee2);
   });
 
-  it('should return an array of testees', () => {
-    expect(testeeService.getTestees()).toStrictEqual(expectedTestees);
+  it('should return an array of testees', async () => {
+    expect(await testeeService.getTestees()).toEqual(expect.arrayContaining([mockTestee, mockTestee2]));
   });
 
-  it('should delete all testees', () => {
-    testeeService.clean();
-    expect(testeeService['testees']).toStrictEqual({});
+  it('should delete all testees', async () => {
+    await testeeService.clean();
+    expect(await testeeService.getTestees()).toStrictEqual([]);
+    expect(await redis.smembers(KEY.testeeTestId(5))).toStrictEqual([]);
+    expect(await redis.smembers(KEY.testeeTestId(6))).toStrictEqual([]);
   });
 
-  it('should broadcast commands to testees', () => {
-    const mockCommand : Command = {
-      keyword: 'pause',
-      id: 'string id',
-      arguments: ['arguments1', 'argument2'],
-      timestamp: 12
+  it('should broadcast commands to the addressed testees', async () => {
+    await connect(mockTestee.token); // alive + local
+    const ws = (websocketGateway['clients']).get(mockTestee.token)!;
+    const spySend = jest.spyOn(ws, 'send');
+
+    const mockCommand: Command = {
+      keyword: 'pause', id: 'string id', arguments: ['arguments1', 'argument2'], timestamp: 12
     };
+    await testeeService.broadcastCommandToTestees(mockCommand, [2, 3, 5, 19]);
 
-    const testIds = [2, 3, 5, 19];
-    const spyBroadcastToRegistered = jest.spyOn(testeeService['websocketGateway'], 'broadcastToRegistered');
-    expect(testeeService.broadcastCommandToTestees(mockCommand, testIds)).toBeUndefined();
-    expect(spyBroadcastToRegistered).toHaveBeenCalled();
-    expect(testeeService['websocketGateway']['broadcastToRegistered']).toHaveBeenCalled();
+    expect(spySend).toHaveBeenCalledWith(JSON.stringify({ event: 'commands', data: [mockCommand] }));
   });
 
-  it('should return early (notifyDisconnection)', () => {
-    const invalidTestee : Testee = {
-      token: '',
-      testId: 2,
-      disconnectNotificationUri: 'http://www.disconnectURI.de'
-    };
-    expect(testeeService.notifyDisconnection(invalidTestee.token)).toBeUndefined();
+  it('should return early when testee is unknown (notifyDisconnection)', async () => {
+    await testeeService.notifyDisconnection('does-not-exist');
+    expect(mockHttp.post).not.toHaveBeenCalled();
   });
 
-  it('should call http post with error (notifyDisconnection)', () => {
-    const spyLogger = jest.spyOn(testeeService['logger'], 'warn');
-    postReturn = new Subject<void>();
-    testeeService.notifyDisconnection(mockTestee.token);
-    expect(mockHTTPService.post)
-      .toHaveBeenCalledWith(testeeService['testees']['testeeToken'].disconnectNotificationUri, {}, {});
-    mockHTTPService.post().error('any error message');
-    expect(spyLogger).toHaveBeenCalled();
-  });
-
-  it('should call http post (notifyDisconnection) (happy path)', () => {
+  it('should post the disconnect notification (happy path)', async () => {
     const spyLogger = jest.spyOn(testeeService['logger'], 'log');
-    postReturn = new Subject<void>();
-    testeeService.notifyDisconnection(mockTestee.token);
-    expect(mockHTTPService.post)
-      .toHaveBeenCalledWith(testeeService['testees']['testeeToken'].disconnectNotificationUri, {}, {});
-    mockHTTPService.post().next();
+    await testeeService.notifyDisconnection(mockTestee.token);
+    expect(mockHttp.post).toHaveBeenCalledWith(mockTestee.disconnectNotificationUri, {}, {});
     expect(spyLogger).toHaveBeenCalled();
   });
 
-  it('should not notify the backend while the test is connected with another token', () => {
-    const reconnected : Testee = { ...mockTestee, token: 'reconnectedToken' };
-    const reconnectedClient = { close: jest.fn(), on: jest.fn() } as unknown as WebSocket;
-    testeeService.addTestee(reconnected);
-    testeeService['websocketGateway']
-      .handleConnection(reconnectedClient, { url: 'www.test.de/ws?token=reconnectedToken' } as IncomingMessage);
-    mockHTTPService.post.mockClear();
-
-    testeeService.notifyDisconnection(mockTestee.token);
-
-    expect(mockHTTPService.post).not.toHaveBeenCalled();
+  it('should retry and then warn when the notification keeps failing', async () => {
+    mockHttp.post = jest.fn(() => throwError(() => new Error('boom')));
+    const spyWarn = jest.spyOn(testeeService['logger'], 'warn');
+    await testeeService.notifyDisconnection(mockTestee.token);
+    expect(mockHttp.post).toHaveBeenCalledTimes(3); // NOTIFY_MAX_RETRIES
+    expect(spyWarn).toHaveBeenCalled();
   });
 
-  it('should notify the backend if another token of the test is registered but not connected', () => {
-    testeeService.addTestee({ ...mockTestee, token: 'pendingToken' });
-    mockHTTPService.post.mockClear();
+  it('should not notify the backend while the test is connected with another token', async () => {
+    const reconnected: Testee = { ...mockTestee, token: 'reconnectedToken' };
+    await testeeService.addTestee(reconnected);
+    await connect(reconnected.token);
+    mockHttp.post.mockClear();
 
-    testeeService.notifyDisconnection(mockTestee.token);
+    await testeeService.notifyDisconnection(mockTestee.token);
 
-    expect(mockHTTPService.post).toHaveBeenCalled();
+    expect(mockHttp.post).not.toHaveBeenCalled();
   });
 
-  it('should map testee with corresponding testIds to their respective tokens', () => {
-    const testIds = [5, 6, 10, 100, 0];
+  it('should not notify the backend while the test is connected with another token on another pod', async () => {
+    await testeeService.addTestee({ ...mockTestee, token: 'otherPodToken' });
+    await redis.setClientAlive('otherPodToken'); // what the other pod's heartbeat keeps refreshed
+    mockHttp.post.mockClear();
 
-    testIds.forEach((testId => {
-      if (testId === 5) {
-        expect(Object.values((testeeService['testees']))
-          .filter(testee => testee.testId === testId)
-          .map(testee => testee.token))
-          .toStrictEqual(['testeeToken']);
-      } else if (testId === 6) {
-        expect(Object.values((testeeService['testees']))
-          .filter(testee => testee.testId === testId)
-          .map(testee => testee.token))
-          .toStrictEqual(['testeeToken2']);
-      } else {
-        expect(Object.values((testeeService['testees']))
-          .filter(testee => testee.testId === testId)
-          .map(testee => testee.token))
-          .toStrictEqual([]);
-      }
-    }));
+    await testeeService.notifyDisconnection(mockTestee.token);
+
+    expect(mockHttp.post).not.toHaveBeenCalled();
+  });
+
+  it('should notify the backend if another token of the test is registered but not connected', async () => {
+    await testeeService.addTestee({ ...mockTestee, token: 'pendingToken' });
+    mockHttp.post.mockClear();
+
+    await testeeService.notifyDisconnection(mockTestee.token);
+
+    expect(mockHttp.post).toHaveBeenCalled();
   });
 });

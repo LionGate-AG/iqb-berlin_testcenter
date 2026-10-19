@@ -5,7 +5,7 @@ import { TestSessionChange } from 'testcenter-common/interfaces/test-session-cha
 import { TestSessionController } from './test-session.controller';
 import { TestSessionService } from './test-session.service';
 
-let testSessionController : TestSessionController;
+let testSessionController: TestSessionController;
 
 describe('TestSessionController Post', () => {
   const mockTestSessionservice = {
@@ -25,44 +25,29 @@ describe('TestSessionController Post', () => {
     expect(testSessionController).toBeDefined();
   });
 
-  it('should throw not session data (no groupName property)', () => {
-    const mockRequest = {
-      body: {
-        personId: 5,
-        timestamp: 12.2
-      }
-    } as Request;
+  it('should throw not session data (no groupName property)', async () => {
+    const mockRequest = { body: { personId: 5, timestamp: 12.2 } } as Request;
 
-    expect(() => testSessionController.pushSessionChange(mockRequest)).toThrow(HttpException);
-    expect(() => testSessionController.pushSessionChange(mockRequest)).toThrow('not session data');
+    await expect(testSessionController.pushSessionChange(mockRequest)).rejects.toThrow(HttpException);
+    await expect(testSessionController.pushSessionChange(mockRequest)).rejects.toThrow('not session data');
   });
 
-  it('should throw not session data (no timestamp property)', () => {
-    const mockRequest = {
-      body: {
-        personId: 5,
-        groupName: 'groupString'
-      }
-    } as Request;
+  it('should throw not session data (no timestamp property)', async () => {
+    const mockRequest = { body: { personId: 5, groupName: 'groupString' } } as Request;
 
-    expect(() => testSessionController.pushSessionChange(mockRequest)).toThrow(HttpException);
-    expect(() => testSessionController.pushSessionChange(mockRequest)).toThrow('not session data');
+    await expect(testSessionController.pushSessionChange(mockRequest)).rejects.toThrow(HttpException);
+    await expect(testSessionController.pushSessionChange(mockRequest)).rejects.toThrow('not session data');
   });
 
-  it('should throw not session data (no personId property)', () => {
-    const mockRequest = {
-      body: {
-        groupName: 'groupString',
-        timestamp: 12.30
-      }
-    } as Request;
+  it('should throw not session data (no personId property)', async () => {
+    const mockRequest = { body: { groupName: 'groupString', timestamp: 12.30 } } as Request;
 
-    expect(() => testSessionController.pushSessionChange(mockRequest)).toThrow(HttpException);
-    expect(() => testSessionController.pushSessionChange(mockRequest)).toThrow('not session data');
+    await expect(testSessionController.pushSessionChange(mockRequest)).rejects.toThrow(HttpException);
+    await expect(testSessionController.pushSessionChange(mockRequest)).rejects.toThrow('not session data');
   });
 
-  it('should not throw any errors (happy path)', () => {
-    const mockSessionChange : TestSessionChange = {
+  it('should not throw any errors (happy path)', async () => {
+    const mockSessionChange: TestSessionChange = {
       personId: 3,
       groupName: 'group string',
       personLabel: 'valid personLabel',
@@ -72,16 +57,14 @@ describe('TestSessionController Post', () => {
       timestamp: 12.30
     };
 
-    const mockRequest = {
-      body: mockSessionChange
-    } as Request;
+    const mockRequest = { body: mockSessionChange } as Request;
 
-    expect(testSessionController.pushSessionChange(mockRequest)).toBeUndefined();
+    await expect(testSessionController.pushSessionChange(mockRequest)).resolves.toBeUndefined();
   });
 });
 
 describe('testSessionController Get', () => {
-  const mockSessionChange1 : TestSessionChange = {
+  const mockSessionChange1: TestSessionChange = {
     personId: 3,
     groupName: 'group string',
     personLabel: 'valid personLabel1',
@@ -91,7 +74,7 @@ describe('testSessionController Get', () => {
     timestamp: 12.30
   };
 
-  const mockSessionChange2 : TestSessionChange = {
+  const mockSessionChange2: TestSessionChange = {
     personId: 6,
     groupName: 'group string',
     personLabel: 'valid personLabel2',
@@ -101,7 +84,7 @@ describe('testSessionController Get', () => {
     timestamp: 13.30
   };
 
-  const mockSessionChange4 : TestSessionChange = {
+  const mockSessionChange4: TestSessionChange = {
     personId: 123,
     groupName: 'group string',
     personLabel: 'valid personLabel4',

@@ -31,6 +31,7 @@ export default defineConfig({
           { text: 'Log-Events', link: '/pages/logging' },
           { text: 'Scaling: PHP-FPM', link: '/pages/scaling-php-fpm' },
           { text: 'Scaling: Autoscaling', link: '/pages/scaling-autoscaling' }
+          { text: 'Scaling: Broadcaster', link: '/pages/scaling-broadcaster' }
         ]
       },
       {
