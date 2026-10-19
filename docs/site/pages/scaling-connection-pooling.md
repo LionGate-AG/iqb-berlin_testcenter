@@ -96,18 +96,50 @@ They are set as environment variables of the `pgbouncer` service in `docker-comp
 Database maintenance commands (`make testcenter-connect-db`, backup and restore) connect to PostgreSQL directly and
 are not affected.
 
-### Kubernetes
+### Kubernetes (Helm)
 
-The Helm chart connects the backend to the database service directly and does not contain PgBouncer yet. When
-PgBouncer runs in front of PostgreSQL in a cluster, size it with the same rule as above:
+The Helm chart contains an optional PgBouncer deployment. Enable it with:
 
-- **client side:** `max_client_conn` per PgBouncer instance ≥ backend replicas × worker processes ÷ PgBouncer
-  replicas, plus headroom;
-- **server side:** PgBouncer replicas × (`default_pool_size` + `reserve_pool_size`), capped by `max_db_connections`,
-  stays below PostgreSQL's `max_connections`;
-- raise the open-files limit of the PgBouncer container to at least `max_client_conn` plus the server connections.
+```yaml
+config:
+  db:
+    persistentConnections: true
+  pgbouncer:
+    enabled: true
+```
 
-PgBouncer is single-threaded; scale it with replicas rather than with CPU per instance.
+The chart then deploys PgBouncer (`<release>-pgbouncer`: Deployment, Service, ConfigMap with `pgbouncer.ini`, and a
+Secret with the auth file built from `secret.db`) and points the backend's `DB_HOST` at it. PgBouncer listens on
+port 5432, so `DB_PORT` stays unchanged. The seed Job keeps connecting to PostgreSQL directly, because it applies
+schema changes, which do not belong in a transaction-pooled connection. The configuration matches the compose
+service (same image, transaction mode, SCRAM authentication, `query_wait_timeout`, `ignore_startup_parameters`).
+PgBouncer raises its open-files soft limit to the hard limit at start, for the reason given above.
+
+| Value | Default | `pgbouncer.ini` | Meaning |
+|---|---|---|---|
+| `config.pgbouncer.enabled` | `false` | | deploy PgBouncer and route the backend through it |
+| `deployment.pgbouncer.replicas` | 2 | | PgBouncer pods behind one service |
+| `config.pgbouncer.maxClientConn` | 1000 | `max_client_conn` | client connections per pod |
+| `config.pgbouncer.defaultPoolSize` | 20 | `default_pool_size` | PostgreSQL connections per pod for normal traffic |
+| `config.pgbouncer.minPoolSize` | 0 | `min_pool_size` | PostgreSQL connections per pod kept open when idle |
+| `config.pgbouncer.reservePoolSize` | 5 | `reserve_pool_size` | additional connections per pod once clients have waited 3 s |
+| `config.pgbouncer.maxDbConnections` | 40 | `max_db_connections` | upper limit of PostgreSQL connections per pod |
+| `config.pgbouncer.maxPreparedStatements` | 200 | `max_prepared_statements` | protocol-level prepared statements tracked per server connection, for clients that use them |
+| `config.pgbouncer.queryWaitTimeout` | 10 | `query_wait_timeout` | seconds a request waits for a free PostgreSQL connection |
+| `image.pgbouncer.*` | `edoburu/pgbouncer:v1.25.2-p0` | | image |
+| `deployment.pgbouncer.resources` | 100m / 64Mi requested, 1 CPU / 256Mi limit | | |
+
+The defaults suit a few backend replicas. For larger installations, size the pool with these rules:
+
+- **client side:** `maxClientConn` ≥ backend replicas × worker processes per replica ÷ PgBouncer replicas, plus
+  headroom. With persistent connections, every worker holds one client connection. The Service spreads
+  connections across the PgBouncer pods only roughly evenly, so leave at least 20 % headroom.
+- **server side:** PgBouncer replicas × `maxDbConnections` stays below PostgreSQL's `max_connections` (500 in the
+  chart), with room for the seed Job and maintenance connections. Example: 2 × 40 = 80.
+- A pool of a few dozen PostgreSQL connections per pod is usually enough: in transaction mode a connection is busy
+  only while a query runs. More server connections than PostgreSQL has CPU cores to work on them rarely helps.
+
+PgBouncer is single-threaded and uses at most one CPU core; scale it with replicas rather than with CPU per pod.
 
 ### Failure behaviour
 
@@ -125,3 +157,4 @@ PgBouncer is single-threaded; scale it with replicas rather than with CPU per in
 
 Set `DB_PERSISTENT_CONNECTIONS=false` (Helm: `config.db.persistentConnections: false`), remove `DB_HOST` or set it
 to `db`, remove the `pgbouncer` profile, and restart. No data is stored in PgBouncer.
+In Helm, set `config.pgbouncer.enabled: false`; the backend then connects to PostgreSQL directly again.

@@ -57,6 +57,8 @@ spec:
                 configMapKeyRef:
                   name: {{ .Release.Name }}-backend-config
                   key: REDIS_CACHE_FILES
+            # Always PostgreSQL directly, also with PgBouncer: the Job applies schema changes, which do not belong in a
+            # transaction-pooled connection.
             - name: DB_HOST
               value: "{{ .Release.Name }}-db"
             - name: DB_PORT

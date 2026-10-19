@@ -96,6 +96,15 @@ image:
     # -- Busybox version tag. Use specific versions for reproducible deployments
     tag: "1.28"
 
+  # -- Configuration for the PgBouncer image (connection pooler, only used with config.pgbouncer.enabled)
+  pgbouncer:
+    # -- Image pull policy
+    imagePullPolicy: IfNotPresent
+    # -- Registry path for the PgBouncer image. Leave empty for Docker Hub
+    registryPath: ""
+    # -- PgBouncer image tag (edoburu/pgbouncer, PgBouncer 1.25.2)
+    tag: "v1.25.2-p0"
+
 # =============================================================================
 # APPLICATION CONFIGURATION
 # =============================================================================
@@ -108,8 +117,35 @@ config:
     # -- Keep one database connection per backend worker process open across requests
     # Saves the connection setup on every request, but every worker of every backend replica then holds a
     # connection while it exists, also when idle. Keep replicas x workers below PostgreSQL's max_connections (500),
-    # or put a connection pooler such as PgBouncer in front of PostgreSQL.
+    # or put a connection pooler in front of PostgreSQL (config.pgbouncer.enabled).
     persistentConnections: false
+
+  # -- Optional PgBouncer connection pooler between the backend and PostgreSQL (transaction pooling)
+  # When enabled, the backend connects to PgBouncer instead of PostgreSQL. The seed Job keeps connecting to
+  # PostgreSQL directly. Sizing: see docs/site/pages/scaling-connection-pooling.md. The pool sizes below are
+  # per PgBouncer pod (deployment.pgbouncer.replicas).
+  pgbouncer:
+    # -- Deploy PgBouncer and route the backend's database traffic through it
+    enabled: false
+    # -- Client connections accepted per PgBouncer pod
+    # Needs to cover backend replicas x worker processes per replica / PgBouncer replicas, plus headroom.
+    maxClientConn: 1000
+    # -- PostgreSQL connections per pod for normal traffic
+    defaultPoolSize: 20
+    # -- PostgreSQL connections per pod kept open also when idle
+    minPoolSize: 0
+    # -- Additional PostgreSQL connections per pod when clients have waited more than 3 seconds
+    reservePoolSize: 5
+    # -- Upper limit of PostgreSQL connections per pod, reserve included
+    # PgBouncer replicas x maxDbConnections must stay below PostgreSQL's max_connections (500), with room for the
+    # seed Job and maintenance connections.
+    maxDbConnections: 40
+    # -- Protocol-level prepared statements tracked per server connection (for clients that use them; the backend
+    # does not use named prepared statements)
+    maxPreparedStatements: 200
+    # -- Seconds a client waits for a free PostgreSQL connection before it gets an error
+    # A waiting client is a blocked backend worker, so failing fast keeps capacity for other requests.
+    queryWaitTimeout: 10
 
   fileServer:
     # -- Enable Redis caching for file server operations (experimental!)
@@ -582,6 +618,29 @@ deployment:
     #     labelSelector:
     #       matchLabels:
     #         app: release-name-cache-server-pod
+
+  # -- PgBouncer deployment configuration (only used with config.pgbouncer.enabled)
+  # PgBouncer is stateless and single-threaded: scale it with replicas rather than with CPU per pod.
+  pgbouncer:
+    # -- Number of PgBouncer replicas, load-balanced by its service
+    replicas: 2
+    # -- Resource allocation for PgBouncer pods
+    resources:
+      limits:
+        # -- A single-threaded PgBouncer cannot use more than one core
+        cpu: 1000m
+        memory: 256Mi
+      requests:
+        cpu: 100m
+        memory: 64Mi
+    # -- Topology spread constraints for PgBouncer deployment
+    topologySpreadConstraints:
+    #   - maxSkew: 1
+    #     topologyKey: kubernetes.io/hostname
+    #     whenUnsatisfiable: DoNotSchedule
+    #     labelSelector:
+    #       matchLabels:
+    #         app: release-name-pgbouncer-pod
 
   # -- Database deployment configuration (PostgreSQL 18.4)
   # PostgreSQL stores all test data, user accounts, results, and application metadata.

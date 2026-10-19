@@ -72,8 +72,13 @@ spec:
                   name: {{ .Release.Name }}-backend-config
                   key: REDIS_CACHE_FILES
             # DB_* is the stable application interface. The database pod maps it to PostgreSQL below.
+            # With PgBouncer, only the host changes: it listens on the PostgreSQL port.
             - name: DB_HOST
+              {{- if .Values.config.pgbouncer.enabled }}
+              value: '{{ .Release.Name }}-pgbouncer'
+              {{- else }}
               value: '{{ .Release.Name }}-db'
+              {{- end }}
             - name: DB_PORT
               value: '5432'
             - name: DB_PERSISTENT_CONNECTIONS
@@ -177,6 +182,18 @@ spec:
                 - ALL
           # BusyBox nc waits for input after a successful connection unless it receives a timeout.
           command: [ 'sh', '-c', 'until nc -z -w 2 {{ .Release.Name }}-db 5432; do echo waiting for {{ .Release.Name }}-db; sleep 2; done;' ]
+        {{- if .Values.config.pgbouncer.enabled }}
+        - name: wait-for-pgbouncer-initcontainer
+          image: "{{ .Values.image.busybox.registryPath }}busybox:{{ .Values.image.busybox.tag | default "latest" }}"
+          imagePullPolicy: {{ .Values.image.busybox.imagePullPolicy }}
+          securityContext:
+            privileged: false
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          command: [ 'sh', '-c', 'until nc -z -w 2 {{ .Release.Name }}-pgbouncer 5432; do echo waiting for {{ .Release.Name }}-pgbouncer; sleep 2; done;' ]
+        {{- end }}
       volumes:
         - name: backend-volume
           persistentVolumeClaim:

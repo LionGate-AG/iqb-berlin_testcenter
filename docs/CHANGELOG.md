@@ -15,6 +15,7 @@
 - Neue Variable `DB_PERSISTENT_CONNECTIONS` (Helm: `config.db.persistentConnections`, Standard `false`): Jeder Backend-Worker hält seine Datenbankverbindung über Anfragen hinweg offen, statt für jede Anfrage eine neue aufzubauen. Jeder Worker belegt dann dauerhaft eine Verbindung; Backend-Instanzen × Worker müssen unter `max_connections` von PostgreSQL (500) bleiben, sonst gehört ein Connection-Pooler davor.
 - Das Backend verwendet keine benannten Prepared Statements mehr (`PDO::PGSQL_ATTR_DISABLE_PREPARES`). Damit funktioniert es hinter einem Connection-Pooler im Transaktionsmodus wie PgBouncer. Parameter werden weiterhin vom Datenbankserver gebunden.
 - docker-compose: Optionaler PgBouncer-Dienst im Profil `pgbouncer` (Transaktionsmodus). Aktivierung mit `COMPOSE_PROFILES=pgbouncer` und `DB_HOST=pgbouncer` in `.env.prod`; `DB_HOST` wird dafür jetzt aus `.env.prod` gelesen (Standard `db`). Siehe [Scaling: Connection Pooling](https://github.com/iqb-berlin/testcenter/blob/master/docs/site/pages/scaling-connection-pooling.md).
+- Helm: Optionaler PgBouncer vor PostgreSQL (`config.pgbouncer.enabled`, Standard `false`; Replikas über `deployment.pgbouncer.replicas`, Pool-Größen unter `config.pgbouncer`). Eingeschaltet verbindet sich das Backend mit PgBouncer statt direkt mit der Datenbank; der Seed-Job verbindet sich weiterhin direkt. Siehe [Scaling: Connection Pooling](https://github.com/iqb-berlin/testcenter/blob/master/docs/site/pages/scaling-connection-pooling.md).
 
 # 19.0.0
 
