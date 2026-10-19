@@ -100,27 +100,42 @@ class Workspace {
 
   /**
    * The only sanctioned way to turn request input (type, file name) into a workspace
-   * file path. Returns null if the type is unknown or the path escapes its sub-folder.
+   * file path. Returns null if the type is unknown, the path escapes its sub-folder or
+   * the file does not exist. Filesystem storage only; see getFileKey() for the object store.
    */
   public function getFilePath(string $type, string $fileName): ?string {
     if (!in_array($type, self::subFolders)) {
       return null;
     }
 
-    if (Storage::isObjectStore()) {
-      // no realpath on object keys, so reject traversal segments explicitly
-      if (array_intersect(explode('/', $fileName), ['', '.', '..'])) {
-        return null;
-      }
-      $path = $this->workspacePath . '/' . $type . '/' . $fileName;
-      $logical = Storage::toLogical($path);
-
-      return ($logical !== null and Storage::driver()->exists($logical)) ? $path : null;
-    }
-
     $path = Folder::getContainedRealPath($this->workspacePath . '/' . $type, $fileName);
 
     return ($path !== null and is_file($path)) ? $path : null;
+  }
+
+  /**
+   * The object-store counterpart of getFilePath(): the storage key for request input (type,
+   * file name), or null if the type is unknown or the name could leave its sub-folder.
+   *
+   * Object keys are plain strings without a realpath() to resolve `..`, so such names are
+   * rejected instead. The check involves no I/O and can run before any cache lookup;
+   * whether the object exists is the caller's concern.
+   */
+  public function getFileKey(string $type, string $fileName): ?string {
+    if (!in_array($type, self::subFolders)) {
+      return null;
+    }
+
+    // a backslash could be read as a separator by a proxy or store along the way
+    if (str_contains($fileName, '\\') or str_contains($fileName, "\0")) {
+      return null;
+    }
+    // an empty segment also stands for a leading, trailing or doubled `/`
+    if (array_intersect(explode('/', $fileName), ['', '.', '..'])) {
+      return null;
+    }
+
+    return Storage::toLogical($this->workspacePath . '/' . $type . '/' . $fileName);
   }
 
   public function deleteFiles(array $filesToDelete): FileDeletionReport {
@@ -158,6 +173,10 @@ class Workspace {
     }
 
     $this->workspaceDAO->updateContentTypeBasedOnRemainingTesttakers();
+
+    if ($deletionReport->deleted) {
+      CacheService::flushPresignedUrls();
+    }
 
     return $deletionReport;
   }

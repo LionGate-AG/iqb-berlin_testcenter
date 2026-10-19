@@ -12,3 +12,8 @@ data:
   PASSWORD_PATTERN: {{ .Values.config.backend.passwordPattern | quote }}
   REQUIRE_LOGIN_PASSWORD: {{ .Values.config.backend.requireLoginPassword | quote }}
   XML_SCHEMA_VALIDATION: {{ .Values.config.backend.xmlSchemaValidation | quote }}
+  DB_PERSISTENT_CONNECTIONS: {{ .Values.config.db.persistentConnections | quote }}
+  TESTCENTER_CACHE_AUTH_TOKEN: {{ .Values.config.backend.cacheAuthToken | quote }}
+  TESTCENTER_AUTH_TOKEN_TTL: {{ .Values.config.backend.authTokenTtl | quote }}
+  TESTCENTER_ASYNC_TEST_LOGS: {{ .Values.config.backend.asyncTestLogs | quote }}
+  TESTCENTER_BUFFER_TEST_STATE: {{ .Values.config.backend.bufferTestState | quote }}

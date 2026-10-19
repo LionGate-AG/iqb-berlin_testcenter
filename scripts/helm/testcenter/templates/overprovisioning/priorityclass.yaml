@@ -1,0 +1,11 @@
+{{- if .Values.overprovisioning.enabled }}
+# Only the buffer pods use this class. Every other pod keeps the default priority 0, so the scheduler always
+# preempts a buffer pod first.
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: {{ .Release.Name }}-overprovisioning
+value: {{ .Values.overprovisioning.priorityValue }}
+globalDefault: false
+description: "Placeholder pods of the overprovisioning buffer; preempted by every other workload."
+{{- end }}

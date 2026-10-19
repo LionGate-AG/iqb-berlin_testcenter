@@ -1,0 +1,17 @@
+{{- $pdb := .Values.deployment.backend.podDisruptionBudget }}
+{{- $minReplicas := .Values.deployment.backend.replicas | int }}
+{{- if .Values.deployment.backend.autoscaling.enabled }}
+{{- $minReplicas = .Values.deployment.backend.autoscaling.minReplicas | int }}
+{{- end }}
+{{- /* With a single pod, minAvailable 1 would block every node drain. */}}
+{{- if and $pdb.enabled (gt $minReplicas 1) }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ .Release.Name }}-backend-pdb
+spec:
+  minAvailable: {{ $pdb.minAvailable }}
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}-backend-pod
+{{- end }}

@@ -135,14 +135,31 @@ class TestController extends Controller {
     }
 
     [$type, $fileName] = explode('/', $path, 2);
-    $filePath = (new Workspace($workspaceId))->getFilePath($type, $fileName);
-    if ($filePath === null) {
-      throw new HttpNotFoundException($request, "File not found: `$path`");
-    }
+    $workspace = new Workspace($workspaceId);
 
     if (Storage::isObjectStore()) {
-      $url = Storage::driver()->presignGet(Storage::toLogical($filePath), SystemConfig::$storage_presignTtl);
-      return $response->withStatus(302)->withHeader('Location', $url);
+      $key = $workspace->getFileKey($type, $fileName);
+      if ($key === null) {
+        throw new HttpNotFoundException($request, "File not found: `$path`");
+      }
+      $url = CacheService::getPresignedUrl($key);
+      if ($url === null) {
+        if (!Storage::driver()->exists($key)) {
+          throw new HttpNotFoundException($request, "File not found: `$path`");
+        }
+        $url = Storage::driver()->presignGet($key, SystemConfig::$storage_presignTtl);
+        CacheService::storePresignedUrl($key, $url);
+      }
+      // like FileResponse: keep shared caches from passing the redirect on without the token check
+      return $response
+        ->withStatus(302)
+        ->withHeader('Location', $url)
+        ->withHeader('Cache-Control', 'private');
+    }
+
+    $filePath = $workspace->getFilePath($type, $fileName);
+    if ($filePath === null) {
+      throw new HttpNotFoundException($request, "File not found: `$path`");
     }
 
     return FileResponse::stream($response, $filePath)
@@ -357,7 +374,10 @@ class TestController extends Controller {
       'timeStamp' => 'REQUIRED'
     ]);
 
-    $newState = self::testDAO()->updateTestState($testId, $statePatch);
+    // IsTestOwner has just read this test's row.
+    /** @var array{laststate: ?string, person_id: int} $ownedTest */
+    $ownedTest = $request->getAttribute('OwnedTest');
+    $newState = self::testDAO()->updateTestState($testId, $statePatch, $ownedTest);
 
     $testLogs = array_map(
       fn($entry) => new TestLog(
@@ -535,9 +555,17 @@ class TestController extends Controller {
       $response = $response->withHeader('SubscribeToken', $token);
     }
 
-    $testSession = self::testDAO()->getTestSession($testId);
-    if (isset($testSession['laststate']['CONNECTION']) && ($testSession['laststate']['CONNECTION'] == 'LOST')) {
-      self::updateTestState($testId, $testSession, 'CONNECTION', 'POLLING');
+    // The state IsTestOwner has just read tells whether the connection was lost. Only then is the full test
+    // session, a join over four tables, needed.
+    /** @var array{laststate: ?string, person_id: int} $ownedTest */
+    $ownedTest = $request->getAttribute('OwnedTest');
+    /** @var array<string, mixed> $lastState */
+    $lastState = JSON::decode($ownedTest['laststate'], true);
+    if (($lastState['CONNECTION'] ?? null) === 'LOST') {
+      $testSession = self::testDAO()->getTestSession($testId);
+      if (isset($testSession['laststate']['CONNECTION']) && ($testSession['laststate']['CONNECTION'] == 'LOST')) {
+        self::updateTestState($testId, $testSession, 'CONNECTION', 'POLLING');
+      }
     }
 
     return $response->withJson($commands);

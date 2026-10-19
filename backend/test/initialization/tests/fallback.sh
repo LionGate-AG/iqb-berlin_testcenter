@@ -6,4 +6,4 @@ source backend/test/initialization/functions/functions.sh
 
 echo_fail "No test name given!"
 
-apache2-foreground
+exec bash /run-server.sh

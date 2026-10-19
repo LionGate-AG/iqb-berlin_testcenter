@@ -9,7 +9,6 @@ use Slim\Exception\HttpBadRequestException;
 use Slim\Exception\HttpNotFoundException;
 use Slim\Http\Response;
 use Slim\Http\ServerRequest as Request;
-use Slim\Psr7\Stream;
 
 class WorkspaceController extends Controller {
   /**
@@ -126,18 +125,20 @@ class WorkspaceController extends Controller {
     $fileType = (string) $request->getAttribute('type', '');
     $filename = (string) $request->getAttribute('filename', '');
 
-    $filePath = (new Workspace($workspaceId))->getFilePath($fileType, $filename);
-    if ($filePath === null) {
-      throw new HttpNotFoundException($request, "File not found: $fileType/$filename");
-    }
-
+    $workspace = new Workspace($workspaceId);
     $contentType = ($fileType === 'Resource') ? 'application/octet-stream' : 'text/xml';
 
     if (Storage::isObjectStore()) {
-      return $response
-        ->withHeader('Content-Type', $contentType)
-        ->withHeader('Content-Disposition', 'attachment; filename="' . $filename . '"')
-        ->withBody(new Stream(Storage::driver()->getStream(Storage::toLogical($filePath))));
+      $key = $workspace->getFileKey($fileType, $filename);
+      if (($key === null) or !Storage::driver()->exists($key)) {
+        throw new HttpNotFoundException($request, "File not found: $fileType/$filename");
+      }
+      return FileResponse::streamResource($response, Storage::driver()->getStream($key), $filename, $contentType);
+    }
+
+    $filePath = $workspace->getFilePath($fileType, $filename);
+    if ($filePath === null) {
+      throw new HttpNotFoundException($request, "File not found: $fileType/$filename");
     }
 
     return FileResponse::stream($response, $filePath, $filename, $contentType);
@@ -288,6 +289,7 @@ class WorkspaceController extends Controller {
    * eg [{"type": "Booklet", "name": "SAMPLE_BOOKLET.XML"}]
    */
   public static function deleteFiles(Request $request, Response $response): Response {
+    set_time_limit(600); // deleting re-validates all remaining Testtakers files, which takes long in large workspaces
     $workspaceId = (int) $request->getAttribute('ws_id');
     $filesToDelete = RequestHelper::getRequiredField($request, 'f');
 

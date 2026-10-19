@@ -7,7 +7,7 @@ php-version = "8.3.12"
 [source]
 workspace = "."
 # an empty list finds no files at all
-paths = ["src", "test", "check-db-compatibility.php", "index.php", "initialize.php", "routes.php"]
+paths = ["src", "test", "check-db-compatibility.php", "drain-logs.php", "drain-test-states.php", "index.php", "initialize.php", "routes.php"]
 includes = ["vendor"]
 excludes = []
 

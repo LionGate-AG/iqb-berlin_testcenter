@@ -20,11 +20,39 @@ class FileResponse {
     ?string  $downloadName = null,
     ?string  $contentType = null
   ): Response {
+    $size = filesize($absolutePath);
+
+    return self::streamResource(
+      $response,
+      fopen($absolutePath, 'rb'),
+      $downloadName,
+      $contentType ?? FileExt::getMimeType($absolutePath),
+      ($size === false) ? null : $size
+    );
+  }
+
+  /**
+   * Streams an already opened resource with the same headers as stream(), for files without
+   * a local path such as objects in the object store. Content-Length is only sent when $size
+   * is known.
+   *
+   * @param resource $handle
+   */
+  public static function streamResource(
+    Response $response,
+    $handle,
+    ?string  $downloadName = null,
+    string   $contentType = 'application/octet-stream',
+    ?int     $size = null
+  ): Response {
     $response = $response
-      ->withHeader('Content-Type', $contentType ?? FileExt::getMimeType($absolutePath))
-      ->withHeader('Content-Length', (string) filesize($absolutePath))
+      ->withHeader('Content-Type', $contentType)
       ->withHeader('Cache-Control', 'private')
-      ->withBody(new Stream(fopen($absolutePath, 'rb')));
+      ->withBody(new Stream($handle));
+
+    if ($size !== null) {
+      $response = $response->withHeader('Content-Length', (string) $size);
+    }
 
     if ($downloadName !== null) {
       $response = $response->withHeader('Content-Disposition', 'attachment; filename="' . $downloadName . '"');

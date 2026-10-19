@@ -2,8 +2,16 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {{ .Release.Name }}-frontend
+  annotations:
+    # The frontend readiness probe hits /api (proxied to the backend), so it can only become
+    # ready once the backend is up. Start it after the backend (wave 2) to avoid blocking the
+    # earlier waves: db (0) -> seed job (1) -> backend (2) -> frontend (3).
+    argocd.argoproj.io/sync-wave: "3"
 spec:
+  {{- if not .Values.deployment.frontend.autoscaling.enabled }}
+  # Omitted when the HPA manages the replica count, so upgrades do not reset it.
   replicas: {{ .Values.deployment.frontend.replicas }}
+  {{- end }}
   {{- if .Values.deployment.frontend.strategy }}
   strategy:
     {{- .Values.deployment.frontend.strategy | toYaml | nindent 4 }}
@@ -13,12 +21,19 @@ spec:
       app: {{ .Release.Name }}-frontend-pod
   template:
     metadata:
+      {{- if .Values.nginxExporter.enabled }}
+      annotations:
+        # Picked up by the chart's Prometheus (templates/prometheus/configmap.yaml).
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ .Values.nginxExporter.port | quote }}
+        prometheus.io/path: "/metrics"
+      {{- end }}
       labels:
         app: {{ .Release.Name }}-frontend-pod
     spec:
       {{- if .Values.deployment.frontend.topologySpreadConstraints }}
       topologySpreadConstraints:
-        {{- .Values.deployment.frontend.topologySpreadConstraints | toYaml | nindent 8 }}
+        {{- tpl (.Values.deployment.frontend.topologySpreadConstraints | toYaml) . | nindent 8 }}
       {{- end }}
       securityContext:
         runAsNonRoot: true
@@ -47,6 +62,10 @@ spec:
             # undefined env var leaves a literal placeholder and nginx fails to start.
             - name: OBJECT_STORE_CSP_ORIGIN
               value: {{ if .Values.objectStore.enabled }}{{ .Values.objectStore.publicEndpoint | quote }}{{ else }}""{{ end }}
+            # Target of the /fs/ proxy in nginx.conf. Without a file-server it is an address nothing listens on:
+            # nginx resolves the target at start-up and would not start with an unknown host.
+            - name: FILE_SERVER_UPSTREAM
+              value: {{ if .Values.config.backend.fileServerEnabled }}"http://file-server:8080"{{ else }}"http://127.0.0.1:1"{{ end }}
           ports:
             - name: http-container
               containerPort: 8080
@@ -71,3 +90,29 @@ spec:
             timeoutSeconds: {{ .Values.deployment.frontend.probes.readiness.timeoutSeconds }}
             successThreshold: {{ .Values.deployment.frontend.probes.readiness.successThreshold }}
             failureThreshold: {{ .Values.deployment.frontend.probes.readiness.failureThreshold }}
+        {{- if .Values.nginxExporter.enabled }}
+        # Turns nginx's stub_status into connection metrics. /nginx_status (frontend/nginx.conf)
+        # answers only requests from 127.0.0.1, i.e. from containers in this pod.
+        - name: {{ .Release.Name }}-nginx-exporter
+          image: "{{ .Values.nginxExporter.image.repository }}:{{ .Values.nginxExporter.image.tag }}"
+          imagePullPolicy: {{ .Values.nginxExporter.image.pullPolicy }}
+          args:
+            - --nginx.scrape-uri=http://127.0.0.1:8080/nginx_status
+            - --web.listen-address=:{{ .Values.nginxExporter.port }}
+          ports:
+            - name: nginx-metrics
+              containerPort: {{ .Values.nginxExporter.port }}
+          {{- with .Values.nginxExporter.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          securityContext:
+            runAsUser: 65534
+            runAsGroup: 65534
+            privileged: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+        {{- end }}

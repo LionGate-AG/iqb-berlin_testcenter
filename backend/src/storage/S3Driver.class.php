@@ -150,7 +150,11 @@ class S3Driver implements StorageDriver {
     $client = $this->presigner();
     $command = $client->getCommand('GetObject', [
       'Bucket' => $this->bucket,
-      'Key' => $this->key($logicalPath)
+      'Key' => $this->key($logicalPath),
+      // Serve the stored bytes unchanged. Some object stores (e.g. STACKIT's) otherwise compress each download on the
+      // fly when the client accepts gzip, as every browser does: chunked, without Content-Length and slower than the
+      // plain transfer for large files. The signed response-content-encoding parameter turns that off for this URL.
+      'ResponseContentEncoding' => 'identity'
     ]);
     $request = $client->createPresignedRequest($command, "+$ttlSeconds seconds");
     return (string) $request->getUri();

@@ -1,0 +1,77 @@
+{{- if or .Values.config.backend.asyncTestLogs .Values.deployment.logDrainer.enabled }}
+# Writes the test logs the backend queues in Redis to the database (config.backend.asyncTestLogs).
+# Same image as the backend, different command.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-log-drainer
+spec:
+  # Exactly one: more would only compete for the same queue.
+  replicas: 1
+  # Keeps it at one during updates, too.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}-log-drainer-pod
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/backend/configmap.yaml") . | sha256sum }}
+        checksum/secret: {{ include (print $.Template.BasePath "/backend/secret.yaml") . | sha256sum }}
+        checksum/db-secret: {{ include (print $.Template.BasePath "/db/secret.yaml") . | sha256sum }}
+      labels:
+        app: {{ .Release.Name }}-log-drainer-pod
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 2000
+        fsGroup: 3000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: {{ .Release.Name }}-log-drainer-container
+          image: "{{ .Values.image.backend.registryPath }}iqbberlin/testcenter-backend:{{ .Values.image.backend.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.backend.imagePullPolicy }}
+          securityContext:
+            runAsUser: 33
+            runAsGroup: 33
+            privileged: false
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          command: [ "php", "/var/www/testcenter/backend/drain-logs.php" ]
+          # The backend's configuration as a whole: the drainer reads it with the same code.
+          envFrom:
+            - configMapRef:
+                name: {{ .Release.Name }}-backend-config
+            - secretRef:
+                name: {{ .Release.Name }}-backend-secret
+            - secretRef:
+                name: {{ .Release.Name }}-db-secret
+          env:
+            - name: DB_HOST
+              value: '{{ .Release.Name }}-db'
+            - name: DB_PORT
+              value: '5432'
+            - name: DB_DATABASE
+              value: {{ .Values.config.db.database | quote }}
+            - name: REDIS_HOST
+              value: '{{ .Release.Name }}-cache-server'
+            - name: REDIS_PORT
+              value: '6379'
+            - name: LOG_DRAIN_BATCH
+              value: {{ .Values.deployment.logDrainer.batchSize | quote }}
+            - name: LOG_DRAIN_IDLE_MS
+              value: {{ .Values.deployment.logDrainer.idleMs | quote }}
+            - name: LOG_DRAIN_REPORT_SEC
+              value: {{ .Values.deployment.logDrainer.reportSeconds | quote }}
+          {{- if .Values.deployment.logDrainer.resources }}
+          resources:
+            {{- .Values.deployment.logDrainer.resources | toYaml | nindent 12 }}
+          {{- end }}
+          # No probes: the drainer has no HTTP endpoint, and it survives an unavailable database or cache server on
+          # its own. Its health signal is the status line it logs every reportSeconds ("depth=...").
+{{- end }}

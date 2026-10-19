@@ -14,12 +14,26 @@ spec:
     metadata:
       annotations:
         checksum/secret: {{ include (print $.Template.BasePath "/db/secret.yaml") . | sha256sum }}
+        {{- if .Values.postgresExporter.enabled }}
+        # Picked up by the chart's Prometheus (templates/prometheus/configmap.yaml).
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9187"
+        prometheus.io/path: "/metrics"
+        {{- end }}
       labels:
         app: {{ .Release.Name }}-db-pod
     spec:
       {{- if .Values.deployment.db.topologySpreadConstraints }}
       topologySpreadConstraints:
-        {{- .Values.deployment.db.topologySpreadConstraints | toYaml | nindent 8 }}
+        {{- tpl (.Values.deployment.db.topologySpreadConstraints | toYaml) . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.deployment.db.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.deployment.db.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
       {{- end }}
       securityContext:
         runAsNonRoot: true
@@ -56,13 +70,23 @@ spec:
                 secretKeyRef:
                   name: {{ .Release.Name }}-db-secret
                   key: DB_PASSWORD
-          args: [ "postgres", "-c", "max_connections=500" ]
+          # Server settings from deployment.db.settings, one `-c name=value` each
+          args:
+            - postgres
+            {{- range $name, $value := .Values.deployment.db.settings }}
+            - -c
+            - {{ printf "%s=%v" $name $value | quote }}
+            {{- end }}
           ports:
             - name: postgres
               containerPort: 5432
           volumeMounts:
             - name: db-volume
               mountPath: /var/lib/postgresql
+            {{- if .Values.deployment.db.sharedMemorySize }}
+            - name: shared-memory
+              mountPath: /dev/shm
+            {{- end }}
           livenessProbe:
             exec:
               command:
@@ -94,7 +118,58 @@ spec:
             timeoutSeconds: {{ .Values.deployment.db.probes.startup.timeoutSeconds }}
             successThreshold: {{ .Values.deployment.db.probes.startup.successThreshold }}
             failureThreshold: {{ .Values.deployment.db.probes.startup.failureThreshold }}
+        {{- if .Values.postgresExporter.enabled }}
+        # Serves PostgreSQL statistics (connections by state, transactions, locks, cache hits, ...)
+        # on :9187/metrics. Connects over localhost as the database owner, which the image creates
+        # as a superuser, so every pg_stat_* view is readable.
+        - name: {{ .Release.Name }}-postgres-exporter
+          image: "{{ .Values.postgresExporter.image.repository }}:{{ .Values.postgresExporter.image.tag }}"
+          imagePullPolicy: {{ .Values.postgresExporter.image.pullPolicy }}
+          securityContext:
+            privileged: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          env:
+            - name: DATA_SOURCE_URI
+              value: "127.0.0.1:5432/{{ .Values.config.db.database }}?sslmode=disable"
+            - name: DATA_SOURCE_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-db-secret
+                  key: DB_USER
+            - name: DATA_SOURCE_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-db-secret
+                  key: DB_PASSWORD
+          ports:
+            - name: metrics
+              containerPort: 9187
+          {{- with .Values.postgresExporter.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          # No readiness probe: a sidecar that is not ready would take the database pod out of
+          # its Service. A failing exporter is only restarted.
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 9187
+            initialDelaySeconds: 30
+            periodSeconds: 15
+        {{- end }}
       volumes:
         - name: db-volume
           persistentVolumeClaim:
             claimName: {{ .Release.Name }}-db-pvc
+        {{- with .Values.deployment.db.sharedMemorySize }}
+        # Parallel queries allocate dynamic shared memory in /dev/shm, of which a container gets only 64 MB by default.
+        # Memory-backed, so it counts against the pod's memory limit.
+        - name: shared-memory
+          emptyDir:
+            medium: Memory
+            sizeLimit: {{ . }}
+        {{- end }}

@@ -158,8 +158,10 @@ class SuperAdminDAO extends DAO {
       throw new HttpError("User with name `$userName` already exists!", 409);
     }
 
-    $this->_(
-      'insert into users (name, password, is_superadmin, pw_set_by_admin) values (:user_name, :user_password, :is_superadmin, :pw_set_by_admin)',
+    // `returning` instead of lastInsertId() -- see DAO::insert().
+    $user = $this->_(
+      'insert into users (name, password, is_superadmin, pw_set_by_admin) values (:user_name, :user_password, :is_superadmin, :pw_set_by_admin)
+        returning id',
       [
         ':user_name' => $userName,
         ':user_password' => Password::encrypt($password, $this->passwordSalt, $this->insecurePasswords),
@@ -169,7 +171,7 @@ class SuperAdminDAO extends DAO {
     );
 
     return [
-      'id' => $this->pdoDBhandle->lastInsertId(),
+      'id' => (string) $user['id'],
       'name' => $userName,
       'email' => null,
       'isSuperadmin' => $isSuperadmin ? 1 : 0
@@ -209,13 +211,14 @@ class SuperAdminDAO extends DAO {
       throw new HttpError("Workspace with name `$name` already exists!", 409);
     }
 
-    $this->_(
-      'insert into workspaces (name) values (:ws_name)',
+    // `returning` instead of lastInsertId() -- see DAO::insert().
+    $workspace = $this->_(
+      'insert into workspaces (name) values (:ws_name) returning id',
       [':ws_name' => $name]
     );
 
     return [
-      'id' => $this->pdoDBhandle->lastInsertId(),
+      'id' => (string) $workspace['id'],
       'name' => $name
     ];
   }
@@ -250,12 +253,28 @@ class SuperAdminDAO extends DAO {
 
   public function deleteWorkspaces(array $wsIds): void {
     foreach ($wsIds as $wsId) {
+      // The delete cascades to the workspace's tests, whose cached states have to go with them.
+      /** @var list<array{id: int|string}>|null $tests */
+      $tests = TestStateBuffer::cacheEnabled()
+        ? $this->_(
+          'select tests.id
+            from tests
+              inner join person_sessions on tests.person_id = person_sessions.id
+              inner join login_sessions on person_sessions.login_sessions_id = login_sessions.id
+            where login_sessions.workspace_id = :ws_id',
+          [':ws_id' => $wsId],
+          true
+        )
+        : [];
       $this->_(
         'delete from workspaces
                 where workspaces.id = :ws_id',
         [':ws_id' => $wsId]
       );
+      TestStateBuffer::drop(array_map('intval', array_column($tests ?? [], 'id')));
     }
+    // The delete cascades to the workspaces' login and person sessions. Their tokens are not known here.
+    CacheService::flushAuthTokens();
     // TODO ROLLBACK if one fails!
   }
 

@@ -17,7 +17,7 @@ spec:
     spec:
       {{- if .Values.deployment.cacheServer.topologySpreadConstraints }}
       topologySpreadConstraints:
-        {{- .Values.deployment.cacheServer.topologySpreadConstraints | toYaml | nindent 8 }}
+        {{- tpl (.Values.deployment.cacheServer.topologySpreadConstraints | toYaml) . | nindent 8 }}
       {{- end }}
       securityContext:
         runAsNonRoot: true
@@ -39,12 +39,17 @@ spec:
               drop:
                 - ALL
           command: ["redis-server"]
+          # volatile-lru evicts only keys with an expiry. The queues of the log and state drainers have none and rely
+          # on never being evicted.
           args: [
             "--requirepass", "$(REDIS_PASSWORD)",
             "--maxmemory", "$(REDIS_MEMORY_MAX)",
             "--maxmemory-policy", "volatile-lru",
             "--save", '""',
             "--appendonly", "no"
+            {{- with .Values.config.cacheServer.maxClients }},
+            "--maxclients", {{ . | quote }}
+            {{- end }}
           ]
           ports:
             - name: http-container

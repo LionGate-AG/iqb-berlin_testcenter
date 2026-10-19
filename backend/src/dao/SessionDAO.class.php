@@ -3,9 +3,14 @@
 declare(strict_types=1);
 
 class SessionDAO extends DAO {
-  public function getToken(string $tokenString, array $requiredTypes): AuthToken {
-    $tokenInfo = $this->_(
-      'select
+  /**
+   * One SELECT per session type. When a route accepts several types and the token string exists in more than one
+   * table, this order decides which row wins.
+   *
+   * @var array<string, string>
+   */
+  private const array TOKEN_QUERIES = [
+    'admin' => 'select
                     admin_sessions.token,
                     users.id,
                     \'admin\' as "type",
@@ -16,9 +21,8 @@ class SessionDAO extends DAO {
                 from admin_sessions
                      left join users on (users.id = admin_sessions.user_id)
                 where
-                    admin_sessions.token = :token
-            union
-                select
+                    admin_sessions.token = :token',
+    'person' => 'select
                     person_sessions.token,
                     person_sessions.id as "id",
                     \'person\' as "type",
@@ -30,9 +34,8 @@ class SessionDAO extends DAO {
                      left join login_sessions on (person_sessions.login_sessions_id = login_sessions.id)
                      left join logins on (logins.name = login_sessions.name)
                 where
-                    person_sessions.token = :token
-            union
-                select
+                    person_sessions.token = :token',
+    'login' => 'select
                     token,
                     login_sessions.id as "id",
                     \'login\' as "type",
@@ -43,8 +46,30 @@ class SessionDAO extends DAO {
                 from login_sessions
                      left join logins on (logins.name = login_sessions.name)
                 where
-                    login_sessions.token = :token
-            limit 1',
+                    login_sessions.token = :token'
+  ];
+
+  /**
+   * Resolves a token, searching only the session tables of the types the route accepts. This runs on every
+   * authenticated request, and most routes accept a single type, which then needs no UNION. A token of a type the
+   * route does not accept is therefore not found at all and answered like an unknown one.
+   *
+   * @param string[] $requiredTypes
+   */
+  public function getToken(string $tokenString, array $requiredTypes): AuthToken {
+    $queries = array_intersect_key(self::TOKEN_QUERIES, array_flip($requiredTypes));
+
+    if (!$queries) {
+      throw new HttpError("Invalid token: `$tokenString`", 403);
+    }
+
+    // Only person tokens are cached (see CacheService). A miss, a switched-off cache and an unreachable Redis all
+    // return null and lead to the query below.
+    $tokenInfo = isset($queries['person']) ? CacheService::getAuthTokenRow($tokenString) : null;
+    $servedFromCache = ($tokenInfo !== null);
+
+    $tokenInfo ??= $this->_(
+      implode("\n            union\n                ", $queries) . "\n            limit 1",
       [':token' => $tokenString]
     );
 
@@ -56,13 +81,13 @@ class SessionDAO extends DAO {
       throw new HttpError("Login removed: `$tokenString`", 410);
     }
 
-    if (!in_array($tokenInfo["type"], $requiredTypes)) {
-      throw new HttpError("Token `$tokenString` of "
-        . "type `{$tokenInfo["type"]}` has wrong type - `"
-        . implode("` or `", $requiredTypes) . "` required.", 403);
-    }
+    $validTo = TimeStamp::fromSQLFormat($tokenInfo['validTo']);
+    TimeStamp::checkExpiration(0, $validTo);
 
-    TimeStamp::checkExpiration(0, TimeStamp::fromSQLFormat($tokenInfo['validTo']));
+    // Stored only after all checks have passed, so a row that is rejected is never cached.
+    if (!$servedFromCache and ($tokenInfo['type'] === 'person')) {
+      CacheService::storeAuthTokenRow($tokenString, $tokenInfo, $validTo);
+    }
 
     return new AuthToken(
       $tokenInfo['token'],
@@ -168,18 +193,33 @@ class SessionDAO extends DAO {
   }
 
   public function createLoginSession(Login $login): LoginSession {
-    $loginToken = Token::generate('login', $login->getName());
     $groupToken = $this->getOrCreateGroupToken(
       $login->getWorkspaceId(),
       $login->getGroupName(),
       $login->getGroupLabel()
     );
 
-    // We don't check for existence of the sessions before inserting it because timing issues occurred: If the same
-    // login was requested two times at the same moment it could happen that it was created twice.
+    // Nearly every login after the first finds its session unchanged. Reading it first answers that case without
+    // the upsert below, which would lock the row, rewrite group_name and re-check its foreign keys although nothing
+    // changes.
+    /** @var array{id: int, token: string, group_name: string}|null $existing */
+    $existing = $this->_(
+      'SELECT id, token, group_name FROM login_sessions WHERE name = :name AND workspace_id = :ws',
+      [
+        ':name' => $login->getName(),
+        ':ws' => $login->getWorkspaceId()
+      ]
+    );
 
+    if ($existing and ($existing['group_name'] === $login->getGroupName())) {
+      return new LoginSession($existing['id'], $existing['token'], $groupToken, $login);
+    }
+
+    // A new or regrouped session goes through this single statement, never through the read above: if the same
+    // login is requested twice at the same moment, the unique key lets only one session come into existence.
     // returning hands back the row in both cases: the one just inserted, or the one that was already
     // there - which then keeps its original token and only gets its group refreshed (see #766).
+    $loginToken = Token::generate('login', $login->getName());
     $session = $this->_(
       'insert into login_sessions (token, name, workspace_id, group_name)
             values(:token, :name, :ws, :group_name)
@@ -311,6 +351,10 @@ class SessionDAO extends DAO {
               ':token' => $token
             ]
           );
+          // the previous token is no longer valid and must not be served from the cache
+          if (is_string($personSession['token'])) {
+            CacheService::invalidateAuthToken($personSession['token']);
+          }
         }
         return new PersonSession(
           $loginSession,
@@ -329,9 +373,11 @@ class SessionDAO extends DAO {
     $token = Token::generate('person', "{$login->getGroupName()}_{$login->getName()}_$code");
 
     try {
-      $this->_(
+      // `returning` instead of lastInsertId() -- see DAO::insert().
+      $personSession = $this->_(
         "insert into person_sessions (token, code, login_sessions_id, valid_until, name_suffix)
-            values (:token, :code, :login_id, :valid_until, :suffix)",
+            values (:token, :code, :login_id, :valid_until, :suffix)
+            returning id",
         [
           ':token' => $token,
           ':code' => $code,
@@ -366,7 +412,7 @@ class SessionDAO extends DAO {
     return new PersonSession(
       $loginSession,
       new Person(
-        (int) $this->pdoDBhandle->lastInsertId(),
+        (int) $personSession['id'],
         $token,
         $code,
         $suffix,
@@ -448,6 +494,12 @@ class SessionDAO extends DAO {
   }
 
   public function getOrCreateGroupToken(int $workspaceId, string $groupName, string $groupLabel): string {
+    // A group token does not change while its row exists; the cache is flushed whenever rows are deleted.
+    $cachedGroupToken = CacheService::getGroupToken($workspaceId, $groupName);
+    if ($cachedGroupToken !== null) {
+      return $cachedGroupToken;
+    }
+
     $newGroupToken = Token::generate('group', $groupName);
     $this->_(
       'insert into login_session_groups (group_name, workspace_id, group_label, token, last_modified)
@@ -463,6 +515,7 @@ class SessionDAO extends DAO {
     );
 
     if ($this->lastAffectedRows) {
+      CacheService::storeGroupToken($workspaceId, $groupName, $newGroupToken);
       return $newGroupToken;
     }
 
@@ -478,25 +531,29 @@ class SessionDAO extends DAO {
       throw new Exception("Could not retrieve group token for `{$groupName}`.");
     }
 
-    return $res['token'];
+    $groupToken = (string) $res['token'];
+    CacheService::storeGroupToken($workspaceId, $groupName, $groupToken);
+    return $groupToken;
   }
 
 
   public function groupTokenExists(int $workspaceId, string $groupTokenString): bool {
+    if (CacheService::isGroupTokenValid($workspaceId, $groupTokenString)) {
+      return true;
+    }
+
     $res = $this->_(
-      'select
-            count(token) as count
-          from
-            login_session_groups
-            left join logins on login_session_groups.group_name = logins.group_name
-          where
-            token = ? and login_session_groups.workspace_id = ?',
+      'SELECT 1 AS found FROM login_session_groups WHERE token = ? AND workspace_id = ?',
       [
         $groupTokenString,
         $workspaceId
       ]
     );
-    return !!$res['count'];
+    $exists = ($res !== null);
+    if ($exists) {
+      CacheService::storeGroupTokenValid($workspaceId, $groupTokenString);
+    }
+    return $exists;
   }
 
   public function getTestStatus(string $personToken, string $bookletName): array {
@@ -552,18 +609,42 @@ class SessionDAO extends DAO {
     return isset($codes2booklets[$code]) and in_array($bookletName, $codes2booklets[$code]);
   }
 
-  public function ownsTest(string $personToken, string $testId): bool {
+  /**
+   * The test, if the given person session owns it. Checks ownership only, not whether the test is locked.
+   *
+   * Keyed by the person session's id, which the token check has already resolved, so no join on person_sessions is
+   * needed. The row carries the test's state, so that handlers can use it instead of reading the same row again.
+   *
+   * Served from the TestStateBuffer when it knows the test belongs to this person; the table decides otherwise.
+   *
+   * @return array{laststate: ?string, person_id: int}|null
+   */
+  public function getOwnedTest(int $personId, int $testId): ?array {
+    $cached = TestStateBuffer::get($testId);
+    if (($cached !== null) and ($cached['person_id'] === $personId)) {
+      return $cached;
+    }
+
+    /** @var array{laststate: ?string, person_id: int}|null $test */
     $test = $this->_(
-      'select tests.locked from tests
-              inner join person_sessions on person_sessions.id = tests.person_id
-              where person_sessions.token=:token and tests.id=:testId',
+      'SELECT laststate, person_id FROM tests WHERE id = :testId AND person_id = :personId',
       [
-        ':token' => $personToken,
-        ':testId' => $testId
+        ':testId' => $testId,
+        ':personId' => $personId
       ]
     );
+    if ($test === null) {
+      return null;
+    }
+    $test['person_id'] = (int) $test['person_id'];
 
-    return !!$test;
+    if ($cached === null) {
+      TestStateBuffer::populate($testId, $personId, $test['laststate']);
+    } else {
+      // The owner of a test never changes, so an entry naming another one was left at this id by a deleted test.
+      TestStateBuffer::store($testId, $personId, $test['laststate']);
+    }
+    return $test;
   }
 
   /**
@@ -648,6 +729,7 @@ class SessionDAO extends DAO {
   public function deletePersonToken(AuthToken $authToken): void {
     // we can not delete the session entirely, because this would delete the whole response data.
     $this->_("update person_sessions set token=null where token = :token", [':token' => $authToken->getToken()]);
+    CacheService::invalidateAuthToken($authToken->getToken());
   }
 
   /**
