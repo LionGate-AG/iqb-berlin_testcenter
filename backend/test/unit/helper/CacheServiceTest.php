@@ -200,5 +200,85 @@ class CacheServiceTest extends TestCase {
     CacheService::reset();
 
     $this->assertNull((new ReflectionProperty(CacheService::class, 'redis'))->getValue());
+  function test_presignedUrlCache_isOffByDefault(): void {
+    putenv('TESTCENTER_CACHE_PRESIGNED_URLS');
+    SystemConfig::readEnvironment();
+
+    $this->assertFalse(SystemConfig::$cache_presignedUrls);
+    $this->assertFalse(CacheService::presignedUrlCacheEnabled());
+  }
+
+  function test_presignedUrlCache_readFromEnvironment(): void {
+    putenv('TESTCENTER_CACHE_PRESIGNED_URLS=1');
+    SystemConfig::readEnvironment();
+
+    $this->assertTrue(SystemConfig::$cache_presignedUrls);
+  }
+
+  function test_presignedUrlCache_switchedOff_doesNotTouchRedis(): void {
+    SystemConfig::$cache_presignedUrls = false;
+    SystemConfig::$storage_presignTtl = 3600;
+
+    CacheService::storePresignedUrl('ws_1/Resource/player.html', 'https://s3/signed');
+    $this->assertNull(CacheService::getPresignedUrl('ws_1/Resource/player.html'));
+    CacheService::flushPresignedUrls();
+
+    $this->assertSame(0, $this->redis->calls);
+  }
+
+  function test_presignedUrlCache_independentOfTheAuthTokenCache(): void {
+    SystemConfig::$cache_authToken = false;
+    SystemConfig::$cache_presignedUrls = true;
+    SystemConfig::$storage_presignTtl = 3600;
+
+    CacheService::storePresignedUrl('ws_1/Resource/player.html', 'https://s3/signed');
+
+    $this->assertSame('https://s3/signed', CacheService::getPresignedUrl('ws_1/Resource/player.html'));
+  }
+
+  function test_presignedUrlCache_entryExpiresBeforeTheSignature(): void {
+    SystemConfig::$cache_presignedUrls = true;
+    SystemConfig::$storage_presignTtl = 3600;
+
+    $this->assertNull(CacheService::getPresignedUrl('ws_1/Resource/player.html'));
+    CacheService::storePresignedUrl('ws_1/Resource/player.html', 'https://s3/signed');
+
+    $this->assertSame('https://s3/signed', CacheService::getPresignedUrl('ws_1/Resource/player.html'));
+    $this->assertNull(CacheService::getPresignedUrl('ws_1/Resource/other.html'));
+    $this->assertSame(3300, $this->redis->ttl['presigned-url:ws_1/Resource/player.html']);
+  }
+
+  function test_presignedUrlCache_lifetimeTooShortForTheMargin_disablesCache(): void {
+    SystemConfig::$cache_presignedUrls = true;
+    SystemConfig::$storage_presignTtl = 300;
+
+    CacheService::storePresignedUrl('ws_1/Resource/player.html', 'https://s3/signed');
+
+    $this->assertFalse(CacheService::presignedUrlCacheEnabled());
+    $this->assertNull(CacheService::getPresignedUrl('ws_1/Resource/player.html'));
+    $this->assertSame(0, $this->redis->calls);
+  }
+
+  function test_flushPresignedUrls_dropsUrlsButNothingElse(): void {
+    SystemConfig::$cache_presignedUrls = true;
+    SystemConfig::$storage_presignTtl = 3600;
+    CacheService::storePresignedUrl('ws_1/Resource/player.html', 'https://s3/signed');
+    CacheService::storePresignedUrl('ws_2/Resource/unit.xml', 'https://s3/signed-2');
+    CacheService::storeAuthTokenRow('person-token', $this->row, 0);
+
+    CacheService::flushPresignedUrls();
+
+    $this->assertSame(['auth-token:person:person-token'], array_keys($this->redis->store));
+  }
+
+  function test_presignedUrlCache_failingRedisBehavesLikeAMiss(): void {
+    SystemConfig::$cache_presignedUrls = true;
+    SystemConfig::$storage_presignTtl = 3600;
+    CacheService::storePresignedUrl('ws_1/Resource/player.html', 'https://s3/signed');
+    $this->redis->failing = true;
+
+    $this->assertNull(CacheService::getPresignedUrl('ws_1/Resource/player.html'));
+    CacheService::storePresignedUrl('ws_1/Resource/player.html', 'https://s3/signed');
+    CacheService::flushPresignedUrls();
   }
 }

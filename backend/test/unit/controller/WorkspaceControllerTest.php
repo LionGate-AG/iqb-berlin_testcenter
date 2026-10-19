@@ -426,6 +426,43 @@ final class WorkspaceControllerTest extends TestCase {
     $this->assertEquals(json_encode($deletionReport), $response->getBody()->getContents());
   }
 
+  private function getFileRequest(string $type, string $fileName): Request {
+    return RequestCreator::create('GET', "/workspace/1/file/$type/$fileName")
+      ->withAttribute('ws_id', 1)
+      ->withAttribute('type', $type)
+      ->withAttribute('filename', $fileName);
+  }
+
+  function test_getFile_objectStore_streamsTheObject(): void {
+    require_once "test/unit/mock-classes/StorageDriverFake.php";
+    SystemConfig::$storage_driver = 's3';
+    Storage::setDriver(new StorageDriverFake(['ws_1/Booklet/SAMPLE_BOOKLET.XML' => '<Booklet/>']));
+    $this->workspaceMock->allows('getFileKey')->andReturn('ws_1/Booklet/SAMPLE_BOOKLET.XML');
+
+    $response = WorkspaceController::getFile($this->getFileRequest('Booklet', 'SAMPLE_BOOKLET.XML'), ResponseCreator::createEmpty());
+
+    $this->assertSame(200, $response->getStatusCode());
+    $this->assertSame('text/xml', $response->getHeaderLine('Content-Type'));
+    $this->assertSame('private', $response->getHeaderLine('Cache-Control'));
+    $this->assertSame('attachment; filename="SAMPLE_BOOKLET.XML"', $response->getHeaderLine('Content-Disposition'));
+    $this->assertSame('<Booklet/>', (string) $response->getBody());
+  }
+
+  function test_getFile_objectStore_rejectedNameIsNotFound(): void {
+    require_once "test/unit/mock-classes/StorageDriverFake.php";
+    $storage = new StorageDriverFake();
+    SystemConfig::$storage_driver = 's3';
+    Storage::setDriver($storage);
+    $this->workspaceMock->allows('getFileKey')->andReturn(null);
+
+    try {
+      WorkspaceController::getFile($this->getFileRequest('Resource', '../Testtakers/SAMPLE_TESTTAKERS.XML'), ResponseCreator::createEmpty());
+      $this->fail('expected a 404');
+    } catch (HttpNotFoundException) {
+      $this->assertSame([], $storage->calls);
+    }
+  }
+
   function test_postFile() {
     $booklet = XMLFileBooklet::fromString(file_get_contents(ROOT_DIR . '/sampledata/Booklet.xml'), 'Booklet.xml');
     $unit = XMLFileUnit::fromString(file_get_contents(ROOT_DIR . '/sampledata/Unit2.xml') . 'is_bogus', 'Unit2.xml');
