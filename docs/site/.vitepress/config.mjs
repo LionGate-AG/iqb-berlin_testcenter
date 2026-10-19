@@ -28,7 +28,8 @@ export default defineConfig({
           { text: 'Modus der Testdurchführung', link: '/pages/test-mode' },
           { text: 'Textersetzungen', link: '/pages/custom-texts' },
           { text: 'Gruppenmonitor Statusmeldungen', link: '/pages/test-session-super-states' },
-          { text: 'Log-Events', link: '/pages/logging' }
+          { text: 'Log-Events', link: '/pages/logging' },
+          { text: 'Scaling: Broadcaster', link: '/pages/scaling-broadcaster' }
         ]
       },
       {

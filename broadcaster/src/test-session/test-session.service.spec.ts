@@ -1,155 +1,124 @@
-/* eslint-disable @typescript-eslint/dot-notation */
 import { Test, TestingModule } from '@nestjs/testing';
+import { WebSocket } from 'ws';
+import { IncomingMessage } from 'http';
 import { TestSessionChange } from 'testcenter-common/interfaces/test-session-change.interface';
 import { TestSessionService } from './test-session.service';
 import { Monitor } from '../monitor/monitor.interface';
 import { WebsocketGateway } from '../common/websocket.gateway';
+import { RedisService } from '../redis/redis.service';
+import { FakeRedisService } from '../redis/redis.fake';
+import { KEY } from '../redis/redis.constants';
 
-let testSessionService : TestSessionService;
+let testSessionService: TestSessionService;
+let websocketGateway: WebsocketGateway;
+let redis: FakeRedisService;
 
-const mockMonitor1 : Monitor = {
-  token: 'monitorToken1',
-  groups: ['Gruppe1', 'TestakerGroup1', 'Gruppe2']
+const mockMonitor1: Monitor = { token: 'monitorToken1', groups: ['Gruppe1', 'TestakerGroup1', 'Gruppe2'] };
+const mockMonitor2: Monitor = { token: 'monitorToken2', groups: ['Gruppe1', 'TestakerGroup1', 'Gruppe2'] };
+const mockMonitor3: Monitor = { token: 'monitorToken3', groups: ['Gruppe3', 'Gruppe5'] };
+
+const makeWs = (): WebSocket => ({
+  send: jest.fn(), close: jest.fn(), on: jest.fn(), terminate: jest.fn(), readyState: 1
+} as unknown as WebSocket);
+
+// Connect a live socket for a token on this pod. Once its registration check (one Redis round trip) has
+// finished, it is also marked alive in Redis.
+const connect = async (token: string): Promise<WebSocket> => {
+  const ws = makeWs();
+  websocketGateway.handleConnection(ws, { url: `x/ws?token=${token}` } as IncomingMessage);
+  await new Promise(resolve => setImmediate(resolve));
+  return ws;
 };
 
-const mockMonitor2 : Monitor = {
-  token: 'monitorToken2',
-  groups: ['Gruppe1', 'TestakerGroup1', 'Gruppe2']
-};
+const build = async (): Promise<void> => {
+  redis = new FakeRedisService();
+  const module: TestingModule = await Test.createTestingModule({
+    providers: [TestSessionService, WebsocketGateway, RedisService]
+  }).overrideProvider(RedisService).useValue(redis).compile();
 
-const mockMonitor3 : Monitor = {
-  token: 'monitorToken3',
-  groups: ['Gruppe3', 'Gruppe5']
+  testSessionService = module.get<TestSessionService>(TestSessionService);
+  websocketGateway = module.get<WebsocketGateway>(WebsocketGateway);
+  await testSessionService.onModuleInit(); // wire pub/sub handlers
 };
 
 describe('TestSessionService: add and remove monitors', () => {
-  beforeEach(async () => {
-    const module: TestingModule = await Test.createTestingModule({
-      providers: [TestSessionService, WebsocketGateway]
-    }).compile();
-
-    testSessionService = module.get<TestSessionService>(TestSessionService);
-  });
+  beforeEach(build);
 
   it('should be defined', () => {
     expect(testSessionService).toBeDefined();
   });
 
-  it('should add monitors', () => {
-    const spyAllowToken = jest.spyOn(testSessionService['websocketGateway'], 'allowToken');
-    testSessionService.addMonitor(mockMonitor1);
+  it('should add monitors (registration written to Redis)', async () => {
+    const spyAllowToken = jest.spyOn(websocketGateway, 'allowToken');
+    await testSessionService.addMonitor(mockMonitor1);
+    expect(await redis.smembers(KEY.monitorGroups('Gruppe1'))).toContain('monitorToken1');
+    expect(await redis.smembers(KEY.monitorGroups('TestakerGroup1'))).toContain('monitorToken1');
+    expect(await redis.smembers(KEY.monitorGroups('Gruppe2'))).toContain('monitorToken1');
+    expect(await redis.hget<Monitor>(KEY.monitors, 'monitorToken1')).toStrictEqual(mockMonitor1);
     expect(spyAllowToken).toHaveBeenCalledWith('monitorToken1');
-    expect(testSessionService['monitors']['Gruppe1']['monitorToken1']).toStrictEqual(mockMonitor1);
-    expect(testSessionService['monitors']['TestakerGroup1']['monitorToken1']).toStrictEqual(mockMonitor1);
-    expect(testSessionService['monitors']['Gruppe2']['monitorToken1']).toStrictEqual(mockMonitor1);
-    expect(testSessionService['testSessions']['Gruppe1']).toStrictEqual({});
-    expect(testSessionService['testSessions']['TestakerGroup1']).toStrictEqual({});
-    expect(testSessionService['testSessions']['Gruppe2']).toStrictEqual({});
   });
 
-  it('should remove monitor (resulting in empty monitor list)', () => {
-    const spyLogger = jest.spyOn(testSessionService['logger'], 'log');
-    const spyDisconnectClient = jest.spyOn(testSessionService['websocketGateway'], 'disconnectClient');
+  it('should remove monitor (resulting in empty monitor list)', async () => {
+    const spyDisconnectClient = jest.spyOn(websocketGateway, 'disconnectClient');
 
-    testSessionService.addMonitor(mockMonitor1);
-    testSessionService.removeMonitor(mockMonitor1.token);
+    await testSessionService.addMonitor(mockMonitor1);
+    await testSessionService.removeMonitor(mockMonitor1.token);
 
-    expect(spyLogger).toHaveBeenCalled();
-    expect(testSessionService['monitors']['Gruppe1']).toStrictEqual({});
-    expect(testSessionService['monitors']['TestakerGroup1']).toStrictEqual({});
-    expect(testSessionService['monitors']['Gruppe2']).toStrictEqual({});
-    expect(testSessionService['testSessions']['Gruppe1']).toBeUndefined();
-    expect(testSessionService['testSessions']['TestakerGroup1']).toBeUndefined();
-    expect(testSessionService['testSessions']['Gruppe2']).toBeUndefined();
-    expect(spyDisconnectClient).toHaveBeenCalled();
+    expect(await redis.smembers(KEY.monitorGroups('Gruppe1'))).toStrictEqual([]);
+    expect(await redis.smembers(KEY.monitorGroups('TestakerGroup1'))).toStrictEqual([]);
+    expect(await redis.hget(KEY.monitors, 'monitorToken1')).toBeNull();
+    expect(spyDisconnectClient).toHaveBeenCalledWith('monitorToken1');
   });
 
-  it('should remove a monitor whose token expired', () => {
-    testSessionService.addMonitor(mockMonitor1);
-    testSessionService['websocketGateway']['tokenExpired$'].next(mockMonitor1.token);
+  it('should remove a monitor whose token expired', async () => {
+    await testSessionService.addMonitor(mockMonitor1);
+    websocketGateway['tokenExpired$'].next(mockMonitor1.token);
+    await new Promise(resolve => setImmediate(resolve));
 
-    expect(testSessionService.getMonitors()).toStrictEqual([]);
-    expect(testSessionService['testSessions']['Gruppe1']).toBeUndefined();
+    expect(await testSessionService.getMonitors()).toStrictEqual([]);
+    expect(await redis.smembers(KEY.monitorGroups('Gruppe1'))).toStrictEqual([]);
   });
 
-  it('should remove monitor (not empty monitor list)', () => {
-    const spyLogger = jest.spyOn(testSessionService['logger'], 'log');
-    const spyDisconnectClient = jest.spyOn(testSessionService['websocketGateway'], 'disconnectClient');
+  it('should remove monitor (other monitor remains)', async () => {
+    await testSessionService.addMonitor(mockMonitor1);
+    await testSessionService.addMonitor(mockMonitor2);
+    await testSessionService.removeMonitor(mockMonitor1.token);
 
-    testSessionService.addMonitor(mockMonitor1);
-    testSessionService.addMonitor(mockMonitor2);
-    testSessionService.removeMonitor(mockMonitor1.token);
-
-    expect(spyLogger).toHaveBeenCalled();
-    expect(testSessionService['monitors']['Gruppe1']['monitorToken1']).toBeUndefined();
-    expect(testSessionService['monitors']['TestakerGroup1']['monitorToken1']).toBeUndefined();
-    expect(testSessionService['monitors']['Gruppe2']['monitorToken1']).toBeUndefined();
-    expect(testSessionService['monitors']['Gruppe1']['monitorToken2']).toStrictEqual(mockMonitor2);
-    expect(testSessionService['monitors']['TestakerGroup1']['monitorToken2']).toStrictEqual(mockMonitor2);
-    expect(testSessionService['monitors']['Gruppe2']['monitorToken2']).toStrictEqual(mockMonitor2);
-    expect(testSessionService['testSessions']['Gruppe1']).toStrictEqual({});
-    expect(testSessionService['testSessions']['TestakerGroup1']).toStrictEqual({});
-    expect(testSessionService['testSessions']['Gruppe2']).toStrictEqual({});
-    expect(spyDisconnectClient).toHaveBeenCalled();
-  });
-
-  it('should remove monitor (two distinct monitors)', () => {
-    const spyLogger = jest.spyOn(testSessionService['logger'], 'log');
-    const spyDisconnectClient = jest.spyOn(testSessionService['websocketGateway'], 'disconnectClient');
-
-    testSessionService.addMonitor(mockMonitor1);
-    testSessionService.addMonitor(mockMonitor3);
-    testSessionService.removeMonitor(mockMonitor1.token);
-
-    expect(spyLogger).toHaveBeenCalled();
-    expect(testSessionService['monitors']['Gruppe1']['monitorToken1']).toBeUndefined();
-    expect(testSessionService['monitors']['TestakerGroup1']['monitorToken1']).toBeUndefined();
-    expect(testSessionService['monitors']['Gruppe2']['monitorToken1']).toBeUndefined();
-    expect(testSessionService['monitors']['Gruppe3']['monitorToken3']).toStrictEqual(mockMonitor3);
-    expect(testSessionService['monitors']['Gruppe5']['monitorToken3']).toStrictEqual(mockMonitor3);
-    expect(testSessionService['testSessions']['Gruppe1']).toBeUndefined();
-    expect(testSessionService['testSessions']['TestakerGroup1']).toBeUndefined();
-    expect(testSessionService['testSessions']['Gruppe2']).toBeUndefined();
-    expect(testSessionService['testSessions']['Gruppe3']).toStrictEqual({});
-    expect(testSessionService['testSessions']['Gruppe5']).toStrictEqual({});
-    expect(spyDisconnectClient).toHaveBeenCalled();
+    expect(await redis.smembers(KEY.monitorGroups('Gruppe1'))).toStrictEqual(['monitorToken2']);
+    expect(await redis.hget(KEY.monitors, 'monitorToken1')).toBeNull();
+    expect(await redis.hget<Monitor>(KEY.monitors, 'monitorToken2')).toStrictEqual(mockMonitor2);
   });
 
   it('should call getClientTokens', () => {
-    const spyGetClientTokens = jest.spyOn(testSessionService['websocketGateway'], 'getClientTokens');
+    const spyGetClientTokens = jest.spyOn(websocketGateway, 'getClientTokens');
     testSessionService.getClientTokens();
     expect(spyGetClientTokens).toHaveBeenCalled();
   });
 });
 
 describe('testSessionService: get and clear all monitors', () => {
-  const monitorList : Monitor[] = [mockMonitor1, mockMonitor2, mockMonitor3];
-
   beforeEach(async () => {
-    const module: TestingModule = await Test.createTestingModule({
-      providers: [TestSessionService, WebsocketGateway]
-    }).compile();
-
-    testSessionService = module.get<TestSessionService>(TestSessionService);
-
-    testSessionService.addMonitor(mockMonitor1);
-    testSessionService.addMonitor(mockMonitor2);
-    testSessionService.addMonitor(mockMonitor3);
+    await build();
+    await testSessionService.addMonitor(mockMonitor1);
+    await testSessionService.addMonitor(mockMonitor2);
+    await testSessionService.addMonitor(mockMonitor3);
   });
 
-  it('should return all monitors', () => {
-    expect(testSessionService.getMonitors()).toStrictEqual(monitorList);
+  it('should return all monitors', async () => {
+    expect(await testSessionService.getMonitors()).toEqual(
+      expect.arrayContaining([mockMonitor1, mockMonitor2, mockMonitor3])
+    );
   });
 
-  it('should clear all monitors and testSessions', () => {
-    testSessionService.clean();
-    expect(testSessionService['monitors']).toStrictEqual({});
-    expect(testSessionService['testSessions']).toStrictEqual({});
+  it('should clear all monitors and testSessions', async () => {
+    await testSessionService.clean();
+    expect(await testSessionService.getMonitors()).toStrictEqual([]);
+    expect(await testSessionService.getTestSessions()).toStrictEqual([]);
   });
 });
 
 describe('testSessionService sessionChanges', () => {
-  const mockSessionChange1 : TestSessionChange = {
+  const mockSessionChange1: TestSessionChange = {
     personId: 357,
     groupName: 'TestakerGroup1',
     testId: 381,
@@ -171,7 +140,7 @@ describe('testSessionService sessionChanges', () => {
     },
     timestamp: 1630051624
   };
-  const mockSessionChange1Updated : TestSessionChange = {
+  const mockSessionChange1Updated: TestSessionChange = {
     personId: 357,
     groupName: 'TestakerGroup1',
     testId: 381,
@@ -193,7 +162,7 @@ describe('testSessionService sessionChanges', () => {
     },
     timestamp: 1630051874
   };
-  const mockSessionChangeNoMonitor : TestSessionChange = {
+  const mockSessionChangeNoMonitor: TestSessionChange = {
     personId: 9,
     groupName: 'Gruppe6',
     testId: 10,
@@ -208,7 +177,7 @@ describe('testSessionService sessionChanges', () => {
     unitState: { PLAYER: 'RUNNING', PRESENTATION_PROGRESS: 'complete', RESPONSE_PROGRESS: 'some' },
     timestamp: 1630051624
   };
-  const mockSessionChange2 : TestSessionChange = {
+  const mockSessionChange2: TestSessionChange = {
     personId: 6,
     groupName: 'Gruppe2',
     testId: 7,
@@ -223,7 +192,7 @@ describe('testSessionService sessionChanges', () => {
     unitState: { PLAYER: 'RUNNING', PRESENTATION_PROGRESS: 'complete', RESPONSE_PROGRESS: 'some' },
     timestamp: 1630051624
   };
-  const mockSessionChange3 : TestSessionChange = {
+  const mockSessionChange3: TestSessionChange = {
     personId: 7,
     groupName: 'Gruppe3',
     testId: 8,
@@ -240,34 +209,34 @@ describe('testSessionService sessionChanges', () => {
   };
 
   beforeEach(async () => {
-    const module: TestingModule = await Test.createTestingModule({
-      providers: [TestSessionService, WebsocketGateway]
-    }).compile();
-
-    testSessionService = module.get<TestSessionService>(TestSessionService);
-    testSessionService.addMonitor(mockMonitor1);
-    testSessionService.addMonitor(mockMonitor3);
+    await build();
+    await testSessionService.addMonitor(mockMonitor1);
+    await testSessionService.addMonitor(mockMonitor3);
+    // keep monitors alive so the lazy-eviction pass does not drop them mid-test
+    await connect(mockMonitor1.token);
+    await connect(mockMonitor3.token);
   });
 
-  it('should return early (applySessioChange)', () => {
-    testSessionService.applySessionChange(mockSessionChangeNoMonitor);
-    expect(testSessionService['testSessions']['Testakergroup1']).toBeUndefined();
-    expect(testSessionService['testSessions']['Gruppe2']).toStrictEqual({});
-    expect(testSessionService['testSessions']['Gruppe3']).toStrictEqual({});
-    expect(testSessionService['testSessions']['Gruppe5']).toStrictEqual({});
-    expect(testSessionService['testSessions']['Gruppe6']).toBeUndefined();
+  it('should skip changes for unmonitored groups', async () => {
+    await testSessionService.applySessionChange(mockSessionChangeNoMonitor);
+    expect(await testSessionService.getTestSessions()).toStrictEqual([]);
   });
 
-  it('should create session entry', () => {
-    testSessionService.applySessionChange(mockSessionChange1);
-    expect(testSessionService['testSessions']['TestakerGroup1']['381']).toStrictEqual(mockSessionChange1);
-    expect(testSessionService['testSessions']['Gruppe2']).toStrictEqual({});
-    expect(testSessionService['testSessions']['Gruppe3']).toStrictEqual({});
-    expect(testSessionService['testSessions']['Gruppe5']).toStrictEqual({});
+  it('should create a session entry and deliver to the monitor socket', async () => {
+    const ws = await connect('liveMonitorSocket'); // unrelated extra socket, should not receive
+
+    expect(ws).toBeDefined();
+    const monitorWs = (websocketGateway['clients']).get(mockMonitor1.token)!;
+    const spySend = jest.spyOn(monitorWs, 'send');
+
+    await testSessionService.applySessionChange(mockSessionChange1);
+
+    expect(await testSessionService.getTestSessions()).toStrictEqual([mockSessionChange1]);
+    expect(spySend).toHaveBeenCalledWith(JSON.stringify({ event: 'test-sessions', data: [mockSessionChange1] }));
   });
 
-  it('should update a session entry (same unit name)', () => {
-    const expectedSession : TestSessionChange = {
+  it('should update a session entry (same unit name)', async () => {
+    const expectedSession: TestSessionChange = {
       personId: 357,
       groupName: 'TestakerGroup1',
       testId: 381,
@@ -295,21 +264,18 @@ describe('testSessionService sessionChanges', () => {
       timestamp: 1630051874
     };
 
-    testSessionService.applySessionChange(mockSessionChange1);
-    testSessionService.applySessionChange(mockSessionChange1Updated);
-    expect(testSessionService['testSessions']['TestakerGroup1']['381']).toStrictEqual(expectedSession);
-    expect(testSessionService['testSessions']['Group1']).toBeUndefined();
-    expect(testSessionService['testSessions']['Group2']).toBeUndefined();
-    expect(testSessionService['testSessions']['Group3']).toBeUndefined();
-    expect(testSessionService['testSessions']['Group5']).toBeUndefined();
+    await testSessionService.applySessionChange(mockSessionChange1);
+    await testSessionService.applySessionChange(mockSessionChange1Updated);
+    expect(await testSessionService.getTestSessions()).toStrictEqual([expectedSession]);
   });
 
-  it('should update a session entry (different unit name)', () => {
-    mockSessionChange1Updated.unitName = 'Testunit';
-    mockSessionChange1Updated.unitState = {
-      PLAYER: 'RUNNING', PRESENTATION_PROGRESS: 'complete'
+  it('should update a session entry (different unit name resets unitState)', async () => {
+    const updated = {
+      ...mockSessionChange1Updated,
+      unitName: 'Testunit',
+      unitState: { PLAYER: 'RUNNING', PRESENTATION_PROGRESS: 'complete' }
     };
-    const expectedSession : TestSessionChange = {
+    const expectedSession: TestSessionChange = {
       personId: 357,
       groupName: 'TestakerGroup1',
       testId: 381,
@@ -327,28 +293,31 @@ describe('testSessionService sessionChanges', () => {
       },
       bookletName: 'BOOKLET2',
       unitName: 'Testunit',
-      unitState: {
-        PLAYER: 'RUNNING', PRESENTATION_PROGRESS: 'complete'
-      },
+      unitState: { PLAYER: 'RUNNING', PRESENTATION_PROGRESS: 'complete' },
       timestamp: 1630051874
     };
 
-    testSessionService.applySessionChange(mockSessionChange1);
-    testSessionService.applySessionChange(mockSessionChange1Updated);
-    expect(testSessionService['testSessions']['TestakerGroup1']['381']).toStrictEqual(expectedSession);
-    expect(testSessionService['testSessions']['Group1']).toBeUndefined();
-    expect(testSessionService['testSessions']['Group2']).toBeUndefined();
-    expect(testSessionService['testSessions']['Group3']).toBeUndefined();
-    expect(testSessionService['testSessions']['Group5']).toBeUndefined();
+    await testSessionService.applySessionChange(mockSessionChange1);
+    await testSessionService.applySessionChange(updated);
+    expect(await testSessionService.getTestSessions()).toStrictEqual([expectedSession]);
   });
 
-  it('should return an array of sessionChanges', () => {
-    const expectedTestSessions : TestSessionChange[] =
-    [mockSessionChange1, mockSessionChange2, mockSessionChange3];
+  it('should return an array of all sessionChanges', async () => {
+    await testSessionService.applySessionChange(mockSessionChange1);
+    await testSessionService.applySessionChange(mockSessionChange2);
+    await testSessionService.applySessionChange(mockSessionChange3);
+    expect(await testSessionService.getTestSessions()).toEqual(
+      expect.arrayContaining([mockSessionChange1, mockSessionChange2, mockSessionChange3])
+    );
+  });
 
-    testSessionService.applySessionChange(mockSessionChange1);
-    testSessionService.applySessionChange(mockSessionChange2);
-    testSessionService.applySessionChange(mockSessionChange3);
-    expect(testSessionService.getTestSessions()).toStrictEqual(expectedTestSessions);
+  it('should evict a monitor that has no live socket anywhere', async () => {
+    // monitorToken2 registered but never connected (not alive) -> evicted on next broadcast
+    await testSessionService.addMonitor(mockMonitor2);
+    await testSessionService.applySessionChange(mockSessionChange1);
+    // mockMonitor2 had no live socket, so it should have been removed from Redis
+    expect(await redis.hget(KEY.monitors, 'monitorToken2')).toBeNull();
+    // the connected monitor (mockMonitor1) survives
+    expect(await redis.hget<Monitor>(KEY.monitors, 'monitorToken1')).toStrictEqual(mockMonitor1);
   });
 });

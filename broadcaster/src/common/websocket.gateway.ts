@@ -9,83 +9,225 @@ import { BehaviorSubject, Observable, Subject } from 'rxjs';
 import { map } from 'rxjs/operators';
 import { Server, WebSocket } from 'ws';
 import { IncomingMessage } from 'http';
-import { Logger } from '@nestjs/common';
+import { Logger, OnModuleDestroy } from '@nestjs/common';
 import { BroadcastingEvent } from './interfaces';
+import { RedisService } from '../redis/redis.service';
+
+const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms));
 
 @WebSocketGateway({ path: '/ws' })
-export class WebsocketGateway implements OnGatewayConnection, OnGatewayDisconnect, OnGatewayInit {
+export class WebsocketGateway implements
+  OnGatewayConnection, OnGatewayDisconnect, OnGatewayInit, OnModuleDestroy {
   private readonly logger = new Logger(WebsocketGateway.name);
   private static readonly MAX_CONNECTIONS = 10000;
   private static readonly HEARTBEAT_INTERVAL = 30000;
+  private static readonly SHUTDOWN_GRACE_MS = 5000;
+  // How many clients the heartbeat sweep processes before yielding back to the event loop, so that a
+  // sweep over many clients (e.g. after many sockets were severed at once) does not block the pod,
+  // including its own health probe, for the whole pass.
+  private static readonly HEARTBEAT_BATCH_SIZE = 500;
+  // A registration whose WebSocket has not connected within this time is dropped.
   private static readonly TOKEN_CONNECT_TIMEOUT = 30000;
+  // Upper bound of expired registrations one pod handles per heartbeat tick, so a backlog cannot stall
+  // the sweep; the rest is picked up on the next tick or by another pod.
+  private static readonly TOKEN_EXPIRY_BATCH_SIZE = 1000;
 
   @WebSocketServer()
   private server!: Server; // magically injected
 
-  private clients = new Map<string, WebSocket & { isAlive?: boolean }>();
-  private allowedTokens = new Map<string, number>(); // tokens registered by the backend, with registration time
+  // LOCAL only: the sockets this pod personally terminates. Never shared across pods.
+  // (Which tokens may connect is shared state, not local: see verifyRegistration().)
+  private clients = new Map<string, WebSocket>();
+  // Tracks which local sockets answered the last ping (avoids stashing flags on the ws object).
+  private aliveClients = new WeakSet<WebSocket>();
+
   private clientsCount$: BehaviorSubject<number> = new BehaviorSubject<number>(0);
   private clientLost$: Subject<string> = new Subject<string>();
   private tokenExpired$: Subject<string> = new Subject<string>();
   private heartbeatInterval: NodeJS.Timeout | null = null;
+  // Guards against a second sweep starting while a very large one is still running.
+  private heartbeatSweepRunning = false;
+
+  constructor(private readonly redisService: RedisService) {}
 
   afterInit(server: Server) {
     this.startHeartbeat();
   }
 
+  async onModuleDestroy(): Promise<void> {
+    // Graceful shutdown: stop heartbeat and close all local sockets so clients reconnect to a
+    // surviving pod, then wait a moment for them to notice the close before the process exits.
+    if (this.heartbeatInterval) {
+      clearInterval(this.heartbeatInterval);
+      this.heartbeatInterval = null;
+    }
+    this.logger.log(`shutting down: disconnecting ${this.clients.size} local clients`);
+    this.disconnectAll();
+    await sleep(WebsocketGateway.SHUTDOWN_GRACE_MS);
+  }
+
   private startHeartbeat() {
-    this.heartbeatInterval = setInterval(() => {
-      this.clients.forEach((ws, token) => {
-        if (ws.isAlive === false) {
-          this.logger.warn(`Client ${token} inactive, terminating.`);
-          return ws.terminate(); // handleDisconnect cleans up on the resulting close event
-        }
-
-        ws.isAlive = false;
-        ws.ping();
-      });
-      this.expireUnconnectedTokens();
-    }, WebsocketGateway.HEARTBEAT_INTERVAL);
+    this.heartbeatInterval = setInterval(() => this.onHeartbeatTick(), WebsocketGateway.HEARTBEAT_INTERVAL);
   }
 
-  // a client that registers but never connects (e.g. a proxy blocking WebSockets) registers anew on every poll
-  private expireUnconnectedTokens() {
-    const expiryTime = Date.now() - WebsocketGateway.TOKEN_CONNECT_TIMEOUT;
-    this.allowedTokens.forEach((allowedAt, token) => {
-      if (!this.clients.has(token) && allowedAt <= expiryTime) {
-        this.allowedTokens.delete(token);
-        this.tokenExpired$.next(token);
+  private onHeartbeatTick(): void {
+    if (this.heartbeatSweepRunning) {
+      this.logger.warn('Heartbeat sweep still running from the previous tick, skipping.');
+      return;
+    }
+    this.heartbeatSweepRunning = true;
+    this.runHeartbeatSweep()
+      .catch(e => this.logger.error(`Heartbeat sweep failed: ${(e as Error).message}`))
+      .finally(() => { this.heartbeatSweepRunning = false; });
+  }
+
+  private async runHeartbeatSweep(): Promise<void> {
+    let staleCount = 0;
+    let sinceYield = 0;
+    // Tokens whose liveness marker needs refreshing, flushed per batch in one pipelined Redis round trip
+    // instead of one SET per client.
+    let aliveBatch: string[] = [];
+
+    const flushAliveBatch = async (): Promise<void> => {
+      if (aliveBatch.length === 0) {
+        return;
       }
-    });
+      const batch = aliveBatch;
+      aliveBatch = [];
+      await this.redisService.setClientsAlive(batch).catch(() => {});
+    };
+
+    for (const [token, ws] of this.clients) {
+      if (!this.aliveClients.has(ws)) {
+        this.removeLocalClient(token, ws);
+        ws.terminate();
+        // Announce the loss as handleDisconnect() does for a graceful close, so that the testee or
+        // monitor is removed from Redis. handleDisconnect() does not do it here: the close event caused
+        // by terminate() finds no entry in `clients` any more, so the loss is reported exactly once.
+        this.clientLost$.next(token);
+        staleCount += 1;
+      } else {
+        this.aliveClients.delete(ws);
+        // Refresh the cluster-wide liveness marker for sockets this pod holds.
+        aliveBatch.push(token);
+        ws.ping();
+      }
+
+      sinceYield += 1;
+      if (sinceYield >= WebsocketGateway.HEARTBEAT_BATCH_SIZE) {
+        sinceYield = 0;
+        await flushAliveBatch();
+        await new Promise<void>(resolve => setImmediate(resolve));
+      }
+    }
+
+    await flushAliveBatch();
+
+    // One summary line per tick instead of one per stale client, which is expensive for large sweeps.
+    if (staleCount > 0) {
+      this.logger.warn(`Heartbeat: terminated ${staleCount} inactive client(s).`);
+    }
+
+    await this.expireUnconnectedTokens();
   }
 
-  handleConnection(client: WebSocket & { isAlive?: boolean }, message: IncomingMessage): void {
+  /**
+   * A client that registers but never connects (e.g. behind a proxy blocking WebSockets) registers anew on
+   * every poll; its registrations, and the testees/monitors behind them, are dropped after
+   * TOKEN_CONNECT_TIMEOUT. Every pod runs this on its heartbeat. Registrations live in Redis, and only the
+   * pod whose ZREM removes an entry handles it, so each expiry fires exactly once cluster-wide.
+   */
+  private async expireUnconnectedTokens(): Promise<void> {
+    const candidates = await this.redisService.getTokenRegistrationsBefore(
+      Date.now() - WebsocketGateway.TOKEN_CONNECT_TIMEOUT,
+      WebsocketGateway.TOKEN_EXPIRY_BATCH_SIZE
+    );
+    if (candidates.length === 0) {
+      return;
+    }
+
+    const { alive, dead } = await this.redisService.partitionByAlive(candidates);
+    // Registered again while its socket is connected (e.g. a command poll): nothing to expire, the spare
+    // registration is simply dropped.
+    await Promise.all(alive.map(token => this.redisService.takeTokenRegistration(token)));
+    const taken = await Promise.all(dead.map(token => this.redisService.takeTokenRegistration(token)));
+    dead
+      .filter((token, i) => taken[i])
+      .forEach(token => this.tokenExpired$.next(token));
+  }
+
+  handleConnection(client: WebSocket, message: IncomingMessage): void {
     if (this.clients.size >= WebsocketGateway.MAX_CONNECTIONS) {
       this.logger.error('Max connections reached. Rejecting client.');
       client.close(1013, 'Try again later');
       return;
     }
 
+    let token: string;
     try {
-      const token = WebsocketGateway.getTokenFromUrl(message.url as string);
-      if (!this.allowedTokens.has(token) || this.clients.has(token)) {
-        this.logger.warn(`Connection rejected, token not registered or already connected: ${token}`);
-        client.close(1008, 'Invalid token');
-        return;
-      }
-
-      client.isAlive = true;
-      client.on('pong', () => {
-        client.isAlive = true;
-      });
-
-      this.clients.set(token, client);
-      this.clientsCount$.next(this.clients.size);
-      this.logger.log(`client connected: ${token}`);
+      token = WebsocketGateway.getTokenFromUrl(message.url as string);
     } catch (e) {
       this.logger.error('Connection rejected due to invalid token', e);
       client.close(1008, 'Invalid token');
+      return;
     }
+
+    // Reusing a token must not open a second socket. The Map would silently replace the first one, which
+    // then no longer counts against MAX_CONNECTIONS, a per-pod limit, so this check is per pod as well.
+    // Cross-pod duplicates of a fresh token fail verifyRegistration().
+    if (this.clients.has(token)) {
+      this.logger.warn(`Connection rejected, token already connected: ${token}`);
+      client.close(1008, 'Invalid token');
+      return;
+    }
+
+    this.aliveClients.add(client);
+    client.on('pong', () => {
+      this.aliveClients.add(client);
+    });
+
+    this.clients.set(token, client);
+    this.clientsCount$.next(this.clients.size);
+    this.logger.log(`client connected: ${token}`);
+
+    this.verifyRegistration(token, client);
+  }
+
+  /**
+   * Only tokens the backend registered may connect. Registration arrives over HTTP
+   * and usually lands on another pod than the WebSocket, so it lives in Redis, and checking it is a
+   * round trip. To keep handleConnection() synchronous, the socket is admitted locally first and checked
+   * here; it is announced cluster-wide (liveness marker, connection set) only once the check succeeded,
+   * and nothing is sent to it before, since nothing is ever addressed to an unregistered token.
+   *
+   * Taking the registration is atomic (ZREM), so of two sockets connecting with one fresh token, even
+   * on two pods, exactly one is admitted. After a disconnect the testee/monitor is removed, so a
+   * reconnect needs a new registration.
+   */
+  private verifyRegistration(token: string, client: WebSocket): void {
+    this.redisService.takeTokenRegistration(token)
+      .catch((e: Error) => {
+        this.logger.error(`Could not check the registration of ${token}: ${e.message}`);
+        return false;
+      })
+      .then((registered) => {
+        if (this.clients.get(token) !== client) {
+          return; // closed or disconnected while the check ran
+        }
+        if (!registered) {
+          this.logger.warn(`Connection rejected, token not registered: ${token}`);
+          // Removed before close(), so the resulting handleDisconnect() finds nothing and reports no loss.
+          // Local clean-up only: nothing was announced in Redis for this socket.
+          this.clients.delete(token);
+          this.aliveClients.delete(client);
+          this.clientsCount$.next(this.clients.size);
+          client.close(1008, 'Invalid token');
+          return;
+        }
+        this.redisService.setClientAlive(token).catch(() => {});
+        this.redisService.pushConnection(token).catch(() => {});
+      })
+      .catch((e: Error) => this.logger.error(`Could not admit ${token}: ${e.message}`));
   }
 
   static getTokenFromUrl(url: string): string {
@@ -101,19 +243,27 @@ export class WebsocketGateway implements OnGatewayConnection, OnGatewayDisconnec
     let disconnectedToken = '';
     for (const [token, ws] of this.clients.entries()) {
       if (ws === client) {
-        this.clients.delete(token);
         disconnectedToken = token;
         break;
       }
     }
 
     if (disconnectedToken !== '') {
+      this.removeLocalClient(disconnectedToken, client);
       this.clientLost$.next(disconnectedToken);
-      this.clientsCount$.next(this.clients.size);
       this.logger.log(`client disconnected: ${disconnectedToken}`);
     }
   }
 
+  private removeLocalClient(token: string, ws: WebSocket): void {
+    this.clients.delete(token);
+    this.aliveClients.delete(ws);
+    this.clientsCount$.next(this.clients.size);
+    this.redisService.deleteClientAlive(token).catch(() => {});
+    this.redisService.removeConnection(token).catch(() => {});
+  }
+
+  /** Send to the given tokens, but only to sockets THIS pod actually holds and that are open. */
   broadcastToRegistered(tokens: string[], event: BroadcastingEvent, message: any): void {
     const payload = JSON.stringify({ event, data: message });
 
@@ -126,22 +276,36 @@ export class WebsocketGateway implements OnGatewayConnection, OnGatewayDisconnec
     });
   }
 
-  allowToken(token: string): void {
-    this.allowedTokens.set(token, Date.now());
+  /** Of a cluster-wide token list, return the subset whose live socket is on this pod. */
+  filterLocalTokens(tokens: string[]): string[] {
+    return tokens.filter(token => this.clients.has(token));
   }
 
-  disconnectClient(monitorToken: string): void {
-    this.allowedTokens.delete(monitorToken);
-    const client = this.clients.get(monitorToken);
+  /**
+   * Register a token the backend handed out (TesteeService.addTestee, TestSessionService.addMonitor), so
+   * that a WebSocket may connect with it on any pod. See verifyRegistration().
+   */
+  async allowToken(token: string): Promise<void> {
+    await this.redisService.registerToken(token);
+  }
+
+  /**
+   * Close a socket if this pod holds it. Idempotent and a no-op for tokens on other pods. It also
+   * withdraws a registration the token has not used yet.
+   */
+  disconnectClient(token: string): void {
+    this.redisService.takeTokenRegistration(token).catch(() => {});
+    const client = this.clients.get(token);
+
     if (client) {
-      this.logger.log(`disconnect client: ${monitorToken}`);
+      this.logger.log(`disconnect client: ${token}`);
       client.close();
-      this.clients.delete(monitorToken);
+      this.removeLocalClient(token, client);
     }
   }
 
   disconnectAll(): void {
-    for (const [token, client] of this.clients.entries()) {
+    for (const [token] of this.clients.entries()) {
       this.disconnectClient(token);
     }
   }
@@ -160,6 +324,7 @@ export class WebsocketGateway implements OnGatewayConnection, OnGatewayDisconnec
 
   @SubscribeMessage('subscribe:client.count')
   subscribeClientCount(@MessageBody() data: number): Observable<WsResponse<number>> {
+    // Note: this is the LOCAL pod's connection count, not the cluster-wide total.
     return this.clientsCount$.pipe(map((count: number) => ({ event: 'client.count', data: count })));
   }
 }
