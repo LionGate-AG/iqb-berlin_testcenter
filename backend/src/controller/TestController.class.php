@@ -135,14 +135,23 @@ class TestController extends Controller {
     }
 
     [$type, $fileName] = explode('/', $path, 2);
-    $filePath = (new Workspace($workspaceId))->getFilePath($type, $fileName);
-    if ($filePath === null) {
-      throw new HttpNotFoundException($request, "File not found: `$path`");
-    }
+    $workspace = new Workspace($workspaceId);
 
     if (Storage::isObjectStore()) {
-      $url = Storage::driver()->presignGet(Storage::toLogical($filePath), SystemConfig::$storage_presignTtl);
-      return $response->withStatus(302)->withHeader('Location', $url);
+      $key = $workspace->getFileKey($type, $fileName);
+      if (($key === null) or !Storage::driver()->exists($key)) {
+        throw new HttpNotFoundException($request, "File not found: `$path`");
+      }
+      // like FileResponse: keep shared caches from passing the redirect on without the token check
+      return $response
+        ->withStatus(302)
+        ->withHeader('Location', Storage::driver()->presignGet($key, SystemConfig::$storage_presignTtl))
+        ->withHeader('Cache-Control', 'private');
+    }
+
+    $filePath = $workspace->getFilePath($type, $fileName);
+    if ($filePath === null) {
+      throw new HttpNotFoundException($request, "File not found: `$path`");
     }
 
     return FileResponse::stream($response, $filePath)
