@@ -238,6 +238,37 @@ deployment:
     # For production: Start with 2-3 replicas for high availability
     # Scale based on CPU/memory usage and response times
     replicas: 1
+    # -- Horizontal Pod Autoscaler for the backend (off by default). Scales on CPU and, with
+    # fpmExporter enabled, on PHP-FPM worker saturation, whichever asks for more replicas.
+    # When enabled, `replicas` is ignored. Several backend pods need backend volumes that more
+    # than one node can mount (persistence.backendPvcAccessMode: ReadWriteMany), unless all
+    # pods run on one node. See docs/site/pages/scaling-autoscaling.md.
+    autoscaling:
+      enabled: false
+      minReplicas: 1
+      maxReplicas: 4
+      # -- Target average CPU utilization (% of the CPU request). Once nginx's limit_conn sheds
+      # requests (a shed request costs almost no CPU), CPU stops rising with demand, so keep
+      # this target low enough to fire before that point. The FPM metric covers saturation.
+      targetCPUUtilizationPercentage: 50
+      # -- Scale up when the most loaded pod has more than this many busy PHP-FPM workers.
+      # Needs fpmExporter and an adapter that serves fpmExporter.hpaMetricName. An absolute
+      # count: 180 is 60% of the image's pm.max_children (300), which leaves room for the
+      # minutes a new pod needs to start. Change it together with pm.max_children.
+      fpmActiveProcessesTarget: 180
+      # -- Scale-up rate: up to +percent or +pods (whichever is more) per periodSeconds.
+      # These are the Kubernetes defaults; raise them for steep load ramps.
+      scaleUp:
+        stabilizationWindowSeconds: 0
+        percent: 100
+        pods: 4
+        periodSeconds: 15
+    # -- PodDisruptionBudget for the backend (off by default). Rendered only when the minimum
+    # replica count (autoscaling.minReplicas, or replicas without autoscaling) is above 1,
+    # because with a single pod it would block every node drain.
+    podDisruptionBudget:
+      enabled: false
+      minAvailable: 1
     # -- Deployment strategy configuration
     # RollingUpdate ensures zero-downtime deployments
     strategy:
@@ -317,6 +348,24 @@ deployment:
     # For production: Scale based on expected user load
     # Frontend is lightweight and can handle many concurrent users per pod
     replicas: 1
+    # -- Horizontal Pod Autoscaler for the frontend (off by default). Scales on the active nginx
+    # connections of the most loaded pod only; requires nginxExporter and an adapter that serves
+    # nginxExporter.hpaMetricName. When enabled, `replicas` is ignored.
+    autoscaling:
+      enabled: false
+      minReplicas: 1
+      maxReplicas: 3
+      # -- Scale up when the most loaded pod has more than this many active client connections.
+      # A proxied request occupies two of nginx's worker_connections (client and upstream), so
+      # a pod holds about worker_processes x worker_connections / 2 clients. 300 is about 60% of
+      # that for one worker with nginx's default of 1024 connections.
+      nginxActiveConnectionsTarget: 300
+      # -- Scale-up rate, as for the backend. These are the Kubernetes defaults.
+      scaleUp:
+        stabilizationWindowSeconds: 0
+        percent: 100
+        pods: 4
+        periodSeconds: 15
     # -- Deployment strategy configuration
     # RollingUpdate ensures zero-downtime deployments
     strategy:
@@ -733,3 +782,112 @@ network:
       - { }
     policyTypes:
       - Egress
+
+# =============================================================================
+# METRICS AND AUTOSCALING (all optional, off by default)
+# =============================================================================
+# Exporter sidecars publish worker and connection counts, a small Prometheus collects them, and
+# prometheus-adapter serves the maximum across pods to the HPAs as external metrics.
+# See docs/site/pages/scaling-autoscaling.md.
+
+# -- php-fpm_exporter sidecar in the backend pod. Reads PHP-FPM's status page over FastCGI on
+# 127.0.0.1:9000 (pm.status_path in backend/config/fpm-pool.conf).
+fpmExporter:
+  enabled: false
+  image:
+    repository: hipages/php-fpm_exporter
+    tag: "2.2.0"
+    pullPolicy: IfNotPresent
+  # -- Metrics port, announced through the prometheus.io/port pod annotation.
+  port: 9253
+  # -- Name of the external metric (busy workers of the most loaded pod) that the adapter
+  # serves and the backend HPA uses.
+  hpaMetricName: phpfpm_active_processes_max
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      cpu: 50m
+      memory: 64Mi
+
+# -- nginx-prometheus-exporter sidecar in the frontend pod. Reads stub_status from
+# /nginx_status (frontend/nginx.conf), which only answers requests from inside the pod.
+nginxExporter:
+  enabled: false
+  image:
+    repository: nginx/nginx-prometheus-exporter
+    tag: "1.4.2"
+    pullPolicy: IfNotPresent
+  # -- Metrics port, announced through the prometheus.io/port pod annotation.
+  port: 9113
+  # -- Name of the external metric (active connections of the most loaded pod) that the
+  # adapter serves and the frontend HPA uses.
+  hpaMetricName: nginx_connections_active_max
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      cpu: 50m
+      memory: 64Mi
+
+# -- postgres_exporter sidecar in the database pod: connections by state, transactions, locks,
+# cache hit ratio, database size. For monitoring only; no HPA uses it.
+postgresExporter:
+  enabled: false
+  image:
+    repository: quay.io/prometheuscommunity/postgres-exporter
+    tag: "v0.18.1"
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 50m
+      memory: 32Mi
+    limits:
+      cpu: 100m
+      memory: 64Mi
+
+# -- Single Prometheus instance that feeds the adapter; not a monitoring stack. Scrapes every pod
+# in the release namespace annotated with prometheus.io/scrape: "true". Needs only a namespaced
+# Role (pod discovery). Data lives on an emptyDir.
+prometheus:
+  enabled: false
+  image:
+    repository: prom/prometheus
+    tag: "v3.13.2"
+    pullPolicy: IfNotPresent
+  scrapeInterval: 15s
+  # -- Only needs to cover a few HPA evaluation windows.
+  retention: 2h
+  # -- Memory grows with the number of scraped pods. Too small a limit gets Prometheus
+  # OOM-killed under load; while it is down the HPAs cannot read their external metrics.
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi
+
+# -- prometheus-adapter: serves external.metrics.k8s.io from Prometheus.
+# CLUSTER-SCOPED: it registers the APIService v1beta1.external.metrics.k8s.io, which only one
+# server per cluster can own (KEDA and other adapters use the same one), and creates
+# ClusterRoles/ClusterRoleBindings plus a RoleBinding in kube-system. Installing it needs
+# cluster-admin rights. metrics.k8s.io (CPU, memory) stays with the cluster's metrics-server.
+prometheusAdapter:
+  enabled: false
+  replicas: 1
+  # -- Prometheus to query. Empty: the chart's own (prometheus.enabled must then be true).
+  prometheusUrl: ""
+  image:
+    repository: registry.k8s.io/prometheus-adapter/prometheus-adapter
+    tag: "v0.12.0"
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
