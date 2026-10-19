@@ -9,7 +9,7 @@ use Slim\Http\ServerRequest as Request;
 /**
  * Answers CORS preflight requests before routing takes place.
  *
- * The actual CORS headers are added by the webserver (see `config/no-cors.htaccess`), the application only has to
+ * The actual CORS headers are added by the webserver (see `config/cors.conf`), the application only has to
  * make sure a preflight request is answered with a success status.
  *
  * This has to happen in a middleware and not in a route: a route matching every path would take part in the

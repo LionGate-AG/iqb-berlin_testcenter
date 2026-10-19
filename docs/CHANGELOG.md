@@ -12,6 +12,7 @@
 - Das Löschen von Dateien in Arbeitsbereichen mit vielen Logins bricht nicht mehr nach 30 Sekunden mit Fehler 500 ab. Beim Löschen werden alle verbleibenden Testtaker-Dateien erneut geprüft, was bei rund 25.000 Logins pro Datei etwa eine Minute dauert; das Löschen erhält dafür wie das Hochladen bis zu 600 Sekunden.
 
 ## Technisches
+- Das Backend läuft mit nginx und PHP-FPM statt mit Apache und mod_php. Port (`8080`) und Routen bleiben gleich. Ein Backend-Container verarbeitet bis zu 300 Anfragen gleichzeitig; weitere Anfragen beantwortet nginx sofort mit 503, statt sie warten zu lassen. Der neue Endpunkt `/healthz` wird von nginx ohne PHP beantwortet; das Helm-Chart nutzt ihn für Liveness- und Readiness-Probe (bisher `/version` bzw. `/system/status`) und startet den Container mit `/run-server.sh` statt `apache2-foreground`. Eigene Images auf Basis des Backend-Images können keine Apache-Konfiguration (`.htaccess`, vhost) mehr verwenden. Einstellungen und Dimensionierung beschreibt [Scaling: PHP-FPM](https://pages.cms.hu-berlin.de/iqb/testcenter/pages/scaling-php-fpm.html).
 - Der Brute-Force-Schutz (`BRUTE_FORCE_PROTECTION` in `.env.prod-template`) ist bei Neuinstallationen via docker-compose ausgeschaltet.
 - Das nginx im Frontend-Image erlaubt 16.384 Verbindungen pro Worker (bisher 1.024) und entsprechend viele offene Dateien. Da jede weitergeleitete Verbindung zwei Plätze belegt, schloss ein Frontend-Container bisher ab etwa 1.000 gleichzeitigen Testteilnehmer:innen neue Verbindungen ohne Antwort.
 

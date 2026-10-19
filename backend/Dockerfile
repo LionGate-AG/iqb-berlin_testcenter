@@ -1,5 +1,5 @@
 ARG REGISTRY_PATH=""
-ARG PHP_VERSION=8.3-apache-bookworm
+ARG PHP_VERSION=8.3-fpm-bookworm
 
 # xsd download stage
 FROM ${REGISTRY_PATH}composer:lts AS schema-downloader
@@ -59,26 +59,25 @@ RUN --mount=type=bind,source=backend/composer.json,target=composer.json \
 
 
 FROM ${REGISTRY_PATH}php:${PHP_VERSION} AS system
-# Install PHP extensions
+# Install PHP extensions and nginx, the web server in front of PHP-FPM
 RUN --mount=type=cache,sharing=locked,target=/var/cache/apt \
     apt-get update && apt-get install -y --no-install-recommends \
-    libzip-dev libpq-dev
+    libzip-dev libpq-dev \
+    nginx
 
 RUN docker-php-ext-install -j$(nproc) pdo_pgsql zip opcache
 RUN pecl install igbinary && docker-php-ext-enable igbinary
 RUN pecl install redis && docker-php-ext-enable redis
 
-# Configure Apache
-RUN a2enmod rewrite
-RUN a2enmod headers
-RUN a2dissite 000-default
-COPY backend/config/vhost.conf /etc/apache2/sites-available
-RUN a2ensite vhost
-RUN echo "ServerName localhost" >> /etc/apache2/conf-available/servername.conf
-RUN a2enconf servername
-COPY backend/config/security.conf /etc/apache2/conf-available
-RUN a2enconf security
-RUN sed -i 's|Listen 80|Listen 8080|' /etc/apache2/ports.conf
+# Configure PHP-FPM; "zz-" makes the pool file load after the image's own defaults
+COPY backend/config/fpm-pool.conf /usr/local/etc/php-fpm.d/zz-testcenter.conf
+
+# Configure nginx. The container runs as www-data, so nginx keeps its pid and temp files in /tmp.
+COPY backend/config/nginx.conf /etc/nginx/nginx.conf
+# CORS headers are off by default; the dev compose file mounts backend/config/cors.conf over this file.
+RUN mkdir -p /etc/nginx/conf.d && : > /etc/nginx/conf.d/cors.conf
+RUN mkdir -p /tmp/nginx-client-body /tmp/nginx-proxy /tmp/nginx-fastcgi /tmp/nginx-uwsgi /tmp/nginx-scgi \
+ && chown www-data:www-data /tmp/nginx-client-body /tmp/nginx-proxy /tmp/nginx-fastcgi /tmp/nginx-uwsgi /tmp/nginx-scgi
 
 
 # dev extensions are built here, before any application code is copied, so that
@@ -105,7 +104,6 @@ COPY --chown=www-data:www-data scripts/database ../scripts/database
 COPY --chown=www-data:www-data sampledata ../sampledata
 COPY --chown=www-data:www-data package.json ../package.json
 
-COPY --chown=www-data:www-data backend/.htaccess .
 COPY --chown=www-data:www-data backend/check-db-compatibility.php .
 COPY --chown=www-data:www-data backend/index.php .
 COPY --chown=www-data:www-data backend/initialize.php .
@@ -117,6 +115,10 @@ EXPOSE 8080
 
 COPY backend/entrypoint.sh /entrypoint.sh
 COPY backend/initialize_only.sh /initialize_only.sh
+COPY backend/run-server.sh /run-server.sh
+
+# graceful stop for run-server.sh, which passes it on to nginx and PHP-FPM
+STOPSIGNAL SIGQUIT
 
 ENTRYPOINT ["/entrypoint.sh"]
 
