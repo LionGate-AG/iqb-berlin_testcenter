@@ -1,0 +1,35 @@
+{{- if .Values.prometheusAdapter.enabled }}
+# External metrics only (externalRules); metrics.k8s.io (CPU, memory) stays with metrics-server.
+# Each rule serves one value per namespace: the maximum of the exporter metric across all pods.
+# The HPA compares an External metric directly against its target, so it reacts to the most
+# loaded pod instead of an average that idle pods pull down.
+# resources.overrides maps the namespace of the HPA's request to the `namespace` label; without
+# it the adapter rejects namespaced requests.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-prometheus-adapter-config
+data:
+  config.yaml: |
+    externalRules:
+    {{- if .Values.fpmExporter.enabled }}
+      - seriesQuery: 'phpfpm_active_processes'
+        resources:
+          overrides:
+            namespace: {resource: "namespace"}
+        metricsQuery: 'max(<<.Series>>{<<.LabelMatchers>>})'
+        name:
+          matches: "phpfpm_active_processes"
+          as: {{ .Values.fpmExporter.hpaMetricName | quote }}
+    {{- end }}
+    {{- if .Values.nginxExporter.enabled }}
+      - seriesQuery: 'nginx_connections_active'
+        resources:
+          overrides:
+            namespace: {resource: "namespace"}
+        metricsQuery: 'max(<<.Series>>{<<.LabelMatchers>>})'
+        name:
+          matches: "nginx_connections_active"
+          as: {{ .Values.nginxExporter.hpaMetricName | quote }}
+    {{- end }}
+{{- end }}

@@ -1,0 +1,41 @@
+{{- if .Values.deployment.frontend.autoscaling.enabled }}
+{{- if not .Values.nginxExporter.enabled }}
+{{- fail "deployment.frontend.autoscaling.enabled requires nginxExporter.enabled: the frontend HPA scales on nginx connections only" }}
+{{- end }}
+{{- $as := .Values.deployment.frontend.autoscaling }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ .Release.Name }}-frontend-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ .Release.Name }}-frontend
+  minReplicas: {{ $as.minReplicas }}
+  maxReplicas: {{ $as.maxReplicas }}
+  metrics:
+    # Active connections of the most loaded pod; no CPU metric. An nginx proxy runs out of
+    # worker_connections while its CPU is still almost idle, so a CPU target would never fire.
+    # External instead of Pods, so that the HPA compares against the maximum, not the average.
+    - type: External
+      external:
+        metric:
+          name: {{ .Values.nginxExporter.hpaMetricName }}
+        target:
+          type: Value
+          value: {{ $as.nginxActiveConnectionsTarget | quote }}
+  {{- with $as.scaleUp }}
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: {{ .stabilizationWindowSeconds }}
+      selectPolicy: Max
+      policies:
+        - type: Percent
+          value: {{ .percent }}
+          periodSeconds: {{ .periodSeconds }}
+        - type: Pods
+          value: {{ .pods }}
+          periodSeconds: {{ .periodSeconds }}
+  {{- end }}
+{{- end }}

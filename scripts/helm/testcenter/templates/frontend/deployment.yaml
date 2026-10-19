@@ -3,7 +3,10 @@ kind: Deployment
 metadata:
   name: {{ .Release.Name }}-frontend
 spec:
+  {{- if not .Values.deployment.frontend.autoscaling.enabled }}
+  # Omitted when the HPA manages the replica count, so upgrades do not reset it.
   replicas: {{ .Values.deployment.frontend.replicas }}
+  {{- end }}
   {{- if .Values.deployment.frontend.strategy }}
   strategy:
     {{- .Values.deployment.frontend.strategy | toYaml | nindent 4 }}
@@ -13,6 +16,13 @@ spec:
       app: {{ .Release.Name }}-frontend-pod
   template:
     metadata:
+      {{- if .Values.nginxExporter.enabled }}
+      annotations:
+        # Picked up by the chart's Prometheus (templates/prometheus/configmap.yaml).
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ .Values.nginxExporter.port | quote }}
+        prometheus.io/path: "/metrics"
+      {{- end }}
       labels:
         app: {{ .Release.Name }}-frontend-pod
     spec:
@@ -63,3 +73,29 @@ spec:
             timeoutSeconds: {{ .Values.deployment.frontend.probes.readiness.timeoutSeconds }}
             successThreshold: {{ .Values.deployment.frontend.probes.readiness.successThreshold }}
             failureThreshold: {{ .Values.deployment.frontend.probes.readiness.failureThreshold }}
+        {{- if .Values.nginxExporter.enabled }}
+        # Turns nginx's stub_status into connection metrics. /nginx_status (frontend/nginx.conf)
+        # answers only requests from 127.0.0.1, i.e. from containers in this pod.
+        - name: {{ .Release.Name }}-nginx-exporter
+          image: "{{ .Values.nginxExporter.image.repository }}:{{ .Values.nginxExporter.image.tag }}"
+          imagePullPolicy: {{ .Values.nginxExporter.image.pullPolicy }}
+          args:
+            - --nginx.scrape-uri=http://127.0.0.1:8080/nginx_status
+            - --web.listen-address=:{{ .Values.nginxExporter.port }}
+          ports:
+            - name: nginx-metrics
+              containerPort: {{ .Values.nginxExporter.port }}
+          {{- with .Values.nginxExporter.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          securityContext:
+            runAsUser: 65534
+            runAsGroup: 65534
+            privileged: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+        {{- end }}

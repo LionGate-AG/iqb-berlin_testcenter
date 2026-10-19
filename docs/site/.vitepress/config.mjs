@@ -29,7 +29,8 @@ export default defineConfig({
           { text: 'Textersetzungen', link: '/pages/custom-texts' },
           { text: 'Gruppenmonitor Statusmeldungen', link: '/pages/test-session-super-states' },
           { text: 'Log-Events', link: '/pages/logging' },
-          { text: 'Scaling: PHP-FPM', link: '/pages/scaling-php-fpm' }
+          { text: 'Scaling: PHP-FPM', link: '/pages/scaling-php-fpm' },
+          { text: 'Scaling: Autoscaling', link: '/pages/scaling-autoscaling' }
         ]
       },
       {
