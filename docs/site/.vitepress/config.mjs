@@ -29,7 +29,8 @@ export default defineConfig({
           { text: 'Textersetzungen', link: '/pages/custom-texts' },
           { text: 'Gruppenmonitor Statusmeldungen', link: '/pages/test-session-super-states' },
           { text: 'Log-Events', link: '/pages/logging' },
-          { text: 'Scaling: Auth-Token Cache', link: '/pages/scaling-auth-cache' }
+          { text: 'Scaling: Auth-Token Cache', link: '/pages/scaling-auth-cache' },
+          { text: 'Scaling: Async Test Logs', link: '/pages/scaling-async-logs' }
         ]
       },
       {

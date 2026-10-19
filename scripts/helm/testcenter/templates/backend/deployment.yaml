@@ -123,6 +123,11 @@ spec:
                 configMapKeyRef:
                   name: {{ .Release.Name }}-backend-config
                   key: TESTCENTER_AUTH_TOKEN_TTL
+            - name: TESTCENTER_ASYNC_TEST_LOGS
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ .Release.Name }}-backend-config
+                  key: TESTCENTER_ASYNC_TEST_LOGS
             - name: ADMIN_INIT_PASSWORD
               valueFrom:
                 secretKeyRef:

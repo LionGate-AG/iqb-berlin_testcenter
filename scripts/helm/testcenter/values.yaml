@@ -147,6 +147,13 @@ config:
     # -- Maximum time in seconds a cached token is served without asking the database
     # Bounds changes made outside the application, e.g. directly in the database. 0 disables the cache.
     authTokenTtl: 300
+    # -- Queue the test logs in Redis; the log drainer writes them to the database in batches
+    # Only worth it for large installations, where one insert per logged event becomes a large share of the
+    # database load. Delivery is at most once: logs still queued are lost when the cache server restarts, and
+    # the batch the drainer holds is lost when it dies. When Redis is unavailable or the queue is full, the
+    # backend inserts directly. Switching this on also deploys the log drainer (deployment.logDrainer).
+    # See the documentation page "Scaling: Async Test Logs".
+    asyncTestLogs: false
 
   cacheServer:
     # -- Maximum memory allocation for Redis
@@ -316,6 +323,30 @@ deployment:
     #     labelSelector:
     #       matchLabels:
     #         app: release-name-backend-pod
+
+  # -- Drainer of the test-log queue (see config.backend.asyncTestLogs)
+  # Runs the backend image with `php backend/drain-logs.php`, always exactly one replica. It is deployed whenever
+  # asyncTestLogs is on, or when `enabled` is true. It drains whatever asyncTestLogs says, so keep it enabled when
+  # switching asyncTestLogs off, until its log shows `depth=0`.
+  logDrainer:
+    # -- Deploy the drainer even while asyncTestLogs is off
+    enabled: false
+    # -- Rows per insert, at most 21845 (PostgreSQL's limit of bound parameters per statement)
+    # A larger batch also loses more rows if the drainer dies while writing it.
+    batchSize: 5000
+    # -- Pause in milliseconds when the queue is empty
+    idleMs: 200
+    # -- Seconds between two status lines in the log ("depth=... inserted=... refused=...")
+    # A depth that keeps growing means the drainer is stuck or too slow.
+    reportSeconds: 30
+    # -- One PHP process holding at most one batch
+    resources:
+      limits:
+        cpu: 500m
+        memory: 256Mi
+      requests:
+        cpu: 50m
+        memory: 64Mi
 
   # -- Frontend deployment configuration (Angular 16 SPA)
   # The frontend serves the user interface as a static Angular application.

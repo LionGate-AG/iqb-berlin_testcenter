@@ -110,6 +110,8 @@ COPY --chown=www-data:www-data backend/check-db-compatibility.php .
 COPY --chown=www-data:www-data backend/index.php .
 COPY --chown=www-data:www-data backend/initialize.php .
 COPY --chown=www-data:www-data backend/routes.php .
+# the test-log drainer runs from this image with a different command
+COPY --chown=www-data:www-data backend/drain-logs.php .
 COPY --chown=www-data:www-data backend/src ./src
 
 VOLUME /var/www/testcenter/data
