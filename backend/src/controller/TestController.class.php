@@ -353,7 +353,7 @@ class TestController extends Controller {
     ]);
 
     // IsTestOwner has just read this test's row.
-    /** @var array{laststate: ?string} $ownedTest */
+    /** @var array{laststate: ?string, person_id: int} $ownedTest */
     $ownedTest = $request->getAttribute('OwnedTest');
     $newState = self::testDAO()->updateTestState($testId, $statePatch, $ownedTest);
 
@@ -535,7 +535,7 @@ class TestController extends Controller {
 
     // The state IsTestOwner has just read tells whether the connection was lost. Only then is the full test
     // session, a join over four tables, needed.
-    /** @var array{laststate: ?string} $ownedTest */
+    /** @var array{laststate: ?string, person_id: int} $ownedTest */
     $ownedTest = $request->getAttribute('OwnedTest');
     /** @var array<string, mixed> $lastState */
     $lastState = JSON::decode($ownedTest['laststate'], true);

@@ -599,17 +599,35 @@ class SessionDAO extends DAO {
    * Keyed by the person session's id, which the token check has already resolved, so no join on person_sessions is
    * needed. The row carries the test's state, so that handlers can use it instead of reading the same row again.
    *
-   * @return array{laststate: ?string}|null
+   * Served from the TestStateBuffer when it knows the test belongs to this person; the table decides otherwise.
+   *
+   * @return array{laststate: ?string, person_id: int}|null
    */
   public function getOwnedTest(int $personId, int $testId): ?array {
-    /** @var array{laststate: ?string}|null $test */
+    $cached = TestStateBuffer::get($testId);
+    if (($cached !== null) and ($cached['person_id'] === $personId)) {
+      return $cached;
+    }
+
+    /** @var array{laststate: ?string, person_id: int}|null $test */
     $test = $this->_(
-      'SELECT laststate FROM tests WHERE id = :testId AND person_id = :personId',
+      'SELECT laststate, person_id FROM tests WHERE id = :testId AND person_id = :personId',
       [
         ':testId' => $testId,
         ':personId' => $personId
       ]
     );
+    if ($test === null) {
+      return null;
+    }
+    $test['person_id'] = (int) $test['person_id'];
+
+    if ($cached === null) {
+      TestStateBuffer::populate($testId, $personId, $test['laststate']);
+    } else {
+      // The owner of a test never changes, so an entry naming another one was left at this id by a deleted test.
+      TestStateBuffer::store($testId, $personId, $test['laststate']);
+    }
     return $test;
   }
 

@@ -687,9 +687,49 @@ class SessionDAOTest extends TestCase {
     $result = $this->dbc->getOwnedTest(1, 1);
     $this->assertNotNull($result);
     $this->assertSame(['CURRENT_UNIT_ID' => 'UNIT_1'], JSON::decode($result['laststate'], true));
+    $this->assertSame(1, $result['person_id']);
 
     $this->assertNull($this->dbc->getOwnedTest(4, 1));
     $this->assertNull($this->dbc->getOwnedTest(1, 99999));
+  }
+
+  public function test_getOwnedTest_isServedFromTheTestStateCache(): void {
+    $redis = $this->enableAuthTokenCache();
+    $fromTable = $this->dbc->getOwnedTest(1, 1);
+    $this->assertSame(300, $redis->ttl['test-state:1'], 'a miss fills the cache');
+
+    // changed behind the application's back, so only a cache hit still finds the old state
+    $this->dbc->_("update tests set laststate = '{\"CURRENT_UNIT_ID\":\"CHANGED\"}' where id = 1");
+
+    $this->assertEquals($fromTable, $this->dbc->getOwnedTest(1, 1));
+  }
+
+  public function test_getOwnedTest_cachedTestOfAnotherPerson_isDecidedByTheTable(): void {
+    $this->enableAuthTokenCache();
+    $this->dbc->getOwnedTest(1, 1);
+
+    // person 4 does not own test 1, whatever the cache holds
+    $this->assertNull($this->dbc->getOwnedTest(4, 1));
+  }
+
+  public function test_getOwnedTest_staleEntryOfAnotherPerson_isReplaced(): void {
+    $this->enableAuthTokenCache();
+    // left behind by a deleted test that had the same id
+    TestStateBuffer::store(1, 4, '{"OF":"another person"}');
+
+    $result = $this->dbc->getOwnedTest(1, 1);
+
+    $this->assertSame(['laststate' => '{"CURRENT_UNIT_ID": "UNIT_1"}', 'person_id' => 1], $result);
+    $this->assertSame(['laststate' => '{"CURRENT_UNIT_ID": "UNIT_1"}', 'person_id' => 1], TestStateBuffer::get(1));
+  }
+
+  public function test_getOwnedTest_cacheOff_doesNotTouchRedis(): void {
+    $redis = $this->enableAuthTokenCache();
+    SystemConfig::$cache_authToken = false;
+
+    $this->dbc->getOwnedTest(1, 1);
+
+    $this->assertSame(0, $redis->calls);
   }
 
   public function test_groupTokenExists(): void {
