@@ -91,6 +91,8 @@ spec:
               value: {{ .Values.objectStore.useSSL | quote }}
             - name: S3_PRESIGN_TTL
               value: {{ .Values.objectStore.presignTtlSeconds | quote }}
+            - name: TESTCENTER_CACHE_PRESIGNED_URLS
+              value: {{ .Values.objectStore.cachePresignedUrls | quote }}
             - name: S3_ACCESS_KEY
               valueFrom:
                 secretKeyRef:

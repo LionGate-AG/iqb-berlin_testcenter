@@ -174,6 +174,10 @@ class Workspace {
 
     $this->workspaceDAO->updateContentTypeBasedOnRemainingTesttakers();
 
+    if ($deletionReport->deleted) {
+      CacheService::flushPresignedUrls();
+    }
+
     return $deletionReport;
   }
 

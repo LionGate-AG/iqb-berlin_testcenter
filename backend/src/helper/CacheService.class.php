@@ -154,15 +154,19 @@ class CacheService {
    * not known one by one, e.g. a login import or deleting a group's or a workspace's data.
    */
   public static function flushAuthTokens(): void {
-    self::flushByPrefix(self::AUTH_TOKEN_PREFIX, self::GROUP_TOKEN_PREFIX, self::GROUP_TOKEN_VALID_PREFIX);
+    self::flushByPrefix(
+      self::authTokenCache(),
+      self::AUTH_TOKEN_PREFIX,
+      self::GROUP_TOKEN_PREFIX,
+      self::GROUP_TOKEN_VALID_PREFIX
+    );
   }
 
   /**
    * SCAN and UNLINK instead of KEYS and DEL: KEYS blocks Redis for the whole keyspace, and UNLINK frees the memory in
    * the background. This runs on admin actions only, never on the request path of test-takers.
    */
-  private static function flushByPrefix(string ...$prefixes): void {
-    $redis = self::authTokenCache();
+  private static function flushByPrefix(?Redis $redis, string ...$prefixes): void {
     if (!$redis) {
       return;
     }
@@ -244,6 +248,77 @@ class CacheService {
     } catch (Throwable) {
       // a failed write only costs the next request a database query
     }
+  }
+
+  // Presigned-URL cache
+  //
+  // On the object store, TestController::getFile() answers every resource request of a test-taker with a redirect to
+  // a presigned URL. Signing is local, but the existence check before it is a blocking round trip to the object store
+  // that holds a PHP worker. All test-takers of a workspace load the same few files (player, unit definitions), so
+  // the signed URL is cached per object key and the round trip happens once per file and URL lifetime.
+  //
+  // The signature covers the key, not the content: a file replaced under the same name is served in its new version
+  // through a cached URL. A cached URL of a deleted file leads to a 404 of the object store instead of the backend;
+  // Workspace::deleteFiles() drops all entries so that the backend answers again.
+
+  /** <object key> -> presigned GET url */
+  private const string PRESIGNED_URL_PREFIX = 'presigned-url:';
+
+  /**
+   * Seconds an entry expires before the signature does, so a URL handed out in the last second of its entry is still
+   * valid when the client follows the redirect.
+   */
+  private const int PRESIGNED_URL_MARGIN = 300;
+
+  public static function presignedUrlCacheEnabled(): bool {
+    return SystemConfig::$cache_presignedUrls and (self::presignedUrlTtl() > 0);
+  }
+
+  /** The configured URL lifetime minus the margin; 0 (cache off) when the lifetime is not longer than the margin. */
+  private static function presignedUrlTtl(): int {
+    return max(0, SystemConfig::$storage_presignTtl - self::PRESIGNED_URL_MARGIN);
+  }
+
+  private static function presignedUrlCache(): ?Redis {
+    return self::presignedUrlCacheEnabled() ? self::connection() : null;
+  }
+
+  /**
+   * The cached presigned URL of an object, or null on a miss, when the cache is off, or when Redis is not reachable.
+   * $key must already be validated (Workspace::getFileKey()).
+   */
+  public static function getPresignedUrl(string $key): ?string {
+    $redis = self::presignedUrlCache();
+    if (!$redis) {
+      return null;
+    }
+    try {
+      $url = $redis->get(self::PRESIGNED_URL_PREFIX . $key);
+    } catch (Throwable) {
+      return null;
+    }
+    return (is_string($url) and ($url !== '')) ? $url : null;
+  }
+
+  /** Caches a presigned URL that was just signed for SystemConfig::$storage_presignTtl seconds. */
+  public static function storePresignedUrl(string $key, string $url): void {
+    if ($url === '') {
+      return;
+    }
+    $redis = self::presignedUrlCache();
+    if (!$redis) {
+      return;
+    }
+    try {
+      $redis->set(self::PRESIGNED_URL_PREFIX . $key, $url, self::presignedUrlTtl());
+    } catch (Throwable) {
+      // a failed write only costs the next request a round trip to the object store
+    }
+  }
+
+  /** Drops all cached presigned URLs. */
+  public static function flushPresignedUrls(): void {
+    self::flushByPrefix(self::presignedUrlCache(), self::PRESIGNED_URL_PREFIX);
   }
 
   static function storeAuthentication(PersonSession $personSession): void {

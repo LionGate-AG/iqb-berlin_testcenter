@@ -33,6 +33,7 @@ final class TestControllerTest extends TestCase {
     require_once "test/unit/test-helper/RequestCreator.class.php";
     require_once "test/unit/test-helper/ResponseCreator.class.php";
     require_once "test/unit/mock-classes/StorageDriverFake.php";
+    require_once "test/unit/mock-classes/RedisFake.php";
 
     VfsForTest::setUp();
     Mockery::mock('overload:' . WorkspaceDAO::class);
@@ -83,6 +84,52 @@ final class TestControllerTest extends TestCase {
       $this->getFile('Resource/../Testtakers/SAMPLE_TESTTAKERS.XML');
       $this->fail('expected a 404');
     } catch (HttpNotFoundException) {
+      $this->assertSame([], $this->storage->calls);
+    }
+  }
+
+  private function usePresignedUrlCache(): RedisFake {
+    SystemConfig::$cacheServer_host = 'cache-server';
+    SystemConfig::$cacheServer_port = 6379;
+    SystemConfig::$cacheServer_password = 'secret';
+    SystemConfig::$cache_presignedUrls = true;
+    $redis = new RedisFake();
+    (new ReflectionProperty(CacheService::class, 'redis'))->setValue(null, $redis);
+
+    return $redis;
+  }
+
+  function test_getFile_objectStore_cacheMiss_signsAndStoresTheUrl(): void {
+    $redis = $this->usePresignedUrlCache();
+
+    $response = $this->getFile('Resource/player.html');
+
+    $url = 'https://s3.example.org/tc-files/ws_1/Resource/player.html?X-Amz-Expires=3600';
+    $this->assertSame($url, $response->getHeaderLine('Location'));
+    $this->assertSame(['presigned-url:ws_1/Resource/player.html' => $url], $redis->store);
+  }
+
+  function test_getFile_objectStore_cacheHit_skipsTheObjectStore(): void {
+    $redis = $this->usePresignedUrlCache();
+    $redis->store['presigned-url:ws_1/Resource/player.html'] = 'https://s3.example.org/cached';
+
+    $response = $this->getFile('Resource/player.html');
+
+    $this->assertSame(302, $response->getStatusCode());
+    $this->assertSame('https://s3.example.org/cached', $response->getHeaderLine('Location'));
+    $this->assertSame('private', $response->getHeaderLine('Cache-Control'));
+    $this->assertSame([], $this->storage->calls);
+  }
+
+  function test_getFile_objectStore_rejectsTraversalBeforeTheCache(): void {
+    $redis = $this->usePresignedUrlCache();
+    $redis->store['presigned-url:ws_1/Resource/../Testtakers/SAMPLE_TESTTAKERS.XML'] = 'https://s3.example.org/cached';
+
+    try {
+      $this->getFile('Resource/../Testtakers/SAMPLE_TESTTAKERS.XML');
+      $this->fail('expected a 404');
+    } catch (HttpNotFoundException) {
+      $this->assertSame(0, $redis->calls);
       $this->assertSame([], $this->storage->calls);
     }
   }

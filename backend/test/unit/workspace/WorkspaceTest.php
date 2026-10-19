@@ -220,6 +220,41 @@ class WorkspaceTest extends TestCase {
     $this->assertEquals($resourcesLeftExpected, $resourcesLeft);
   }
 
+  private function usePresignedUrlCache(): RedisFake {
+    require_once "test/unit/mock-classes/RedisFake.php";
+    SystemConfig::$cacheServer_host = 'cache-server';
+    SystemConfig::$cacheServer_port = 6379;
+    SystemConfig::$cacheServer_password = 'secret';
+    SystemConfig::$cache_presignedUrls = true;
+    SystemConfig::$storage_presignTtl = 3600;
+    $redis = new RedisFake();
+    (new ReflectionProperty(CacheService::class, 'redis'))->setValue(null, $redis);
+    $redis->store['presigned-url:ws_1/Resource/somePlayer.HTML'] = 'https://s3/signed';
+
+    $this->workspaceDaoMock->allows('getFiles')->andReturn([]);
+    $this->workspaceDaoMock->allows('getBlockedFiles')->andReturn([]);
+    $this->workspaceDaoMock->allows('updateContentTypeBasedOnRemainingTesttakers');
+
+    return $redis;
+  }
+
+  function test_deleteFiles_flushesPresignedUrls(): void {
+    $redis = $this->usePresignedUrlCache();
+    file_put_contents(DATA_DIR . '/ws_1/Resource/somePlayer.HTML', 'player content');
+
+    (new Workspace(1))->deleteFiles(['Resource/somePlayer.HTML']);
+
+    $this->assertSame([], $redis->store);
+  }
+
+  function test_deleteFiles_keepsPresignedUrlsIfNothingWasDeleted(): void {
+    $redis = $this->usePresignedUrlCache();
+
+    (new Workspace(1))->deleteFiles(['Resource/not-there.html']);
+
+    $this->assertSame(['presigned-url:ws_1/Resource/somePlayer.HTML'], array_keys($redis->store));
+  }
+
   function test_deleteFiles_rejectIfDependencies() {
     $this->workspaceDaoMock
       ->expects('getFiles')

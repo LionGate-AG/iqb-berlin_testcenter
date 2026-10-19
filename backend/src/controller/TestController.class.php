@@ -139,13 +139,21 @@ class TestController extends Controller {
 
     if (Storage::isObjectStore()) {
       $key = $workspace->getFileKey($type, $fileName);
-      if (($key === null) or !Storage::driver()->exists($key)) {
+      if ($key === null) {
         throw new HttpNotFoundException($request, "File not found: `$path`");
+      }
+      $url = CacheService::getPresignedUrl($key);
+      if ($url === null) {
+        if (!Storage::driver()->exists($key)) {
+          throw new HttpNotFoundException($request, "File not found: `$path`");
+        }
+        $url = Storage::driver()->presignGet($key, SystemConfig::$storage_presignTtl);
+        CacheService::storePresignedUrl($key, $url);
       }
       // like FileResponse: keep shared caches from passing the redirect on without the token check
       return $response
         ->withStatus(302)
-        ->withHeader('Location', Storage::driver()->presignGet($key, SystemConfig::$storage_presignTtl))
+        ->withHeader('Location', $url)
         ->withHeader('Cache-Control', 'private');
     }
 

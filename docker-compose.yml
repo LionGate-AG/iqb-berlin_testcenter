@@ -29,6 +29,7 @@ x-env-objectstore: &env-objectstore
   S3_PRESIGN_TTL: ${S3_PRESIGN_TTL:-3600}
   S3_ACCESS_KEY: ${S3_ACCESS_KEY:-}
   S3_SECRET_KEY: ${S3_SECRET_KEY:-}
+  TESTCENTER_CACHE_PRESIGNED_URLS: ${TESTCENTER_CACHE_PRESIGNED_URLS:-false}
 
 x-env-logging-conf: &env-logging-conf
   max-size: "200m"

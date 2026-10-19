@@ -26,6 +26,7 @@ class SystemConfig {
   public static array $bruteForceProtection_sessions = [];
   public static bool $cache_authToken = false;
   public static int $cache_authTokenTtl;
+  public static bool $cache_presignedUrls = false;
   public static string $password_salt = "t";
   public static string $system_version;
   public static int $system_veronaMax;
@@ -116,6 +117,7 @@ class SystemConfig {
 
     $config['cache']['authToken'] = self::boolEnv('TESTCENTER_CACHE_AUTH_TOKEN');
     $config['cache']['authTokenTtl'] = self::intEnv('TESTCENTER_AUTH_TOKEN_TTL', 300);
+    $config['cache']['presignedUrls'] = self::boolEnv('TESTCENTER_CACHE_PRESIGNED_URLS');
 
     $config['storage']['driver'] = self::stringEnv('STORAGE_DRIVER', 'filesystem');
     if ($config['storage']['driver'] === 's3') {
