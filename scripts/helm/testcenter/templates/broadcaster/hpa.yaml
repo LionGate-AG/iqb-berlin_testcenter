@@ -19,4 +19,17 @@ spec:
         target:
           type: Utilization
           averageUtilization: {{ .Values.deployment.broadcaster.autoscaling.targetCPUUtilizationPercentage }}
+  {{- with .Values.deployment.broadcaster.autoscaling.scaleUp }}
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: {{ .stabilizationWindowSeconds }}
+      selectPolicy: Max
+      policies:
+        - type: Percent
+          value: {{ .percent }}
+          periodSeconds: {{ .periodSeconds }}
+        - type: Pods
+          value: {{ .pods }}
+          periodSeconds: {{ .periodSeconds }}
+  {{- end }}
 {{- end }}

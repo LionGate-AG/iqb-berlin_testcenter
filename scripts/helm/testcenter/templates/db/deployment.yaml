@@ -25,7 +25,15 @@ spec:
     spec:
       {{- if .Values.deployment.db.topologySpreadConstraints }}
       topologySpreadConstraints:
-        {{- .Values.deployment.db.topologySpreadConstraints | toYaml | nindent 8 }}
+        {{- tpl (.Values.deployment.db.topologySpreadConstraints | toYaml) . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.deployment.db.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.deployment.db.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
       {{- end }}
       securityContext:
         runAsNonRoot: true
@@ -62,13 +70,23 @@ spec:
                 secretKeyRef:
                   name: {{ .Release.Name }}-db-secret
                   key: DB_PASSWORD
-          args: [ "postgres", "-c", "max_connections=500" ]
+          # Server settings from deployment.db.settings, one `-c name=value` each
+          args:
+            - postgres
+            {{- range $name, $value := .Values.deployment.db.settings }}
+            - -c
+            - {{ printf "%s=%v" $name $value | quote }}
+            {{- end }}
           ports:
             - name: postgres
               containerPort: 5432
           volumeMounts:
             - name: db-volume
               mountPath: /var/lib/postgresql
+            {{- if .Values.deployment.db.sharedMemorySize }}
+            - name: shared-memory
+              mountPath: /dev/shm
+            {{- end }}
           livenessProbe:
             exec:
               command:
@@ -147,3 +165,11 @@ spec:
         - name: db-volume
           persistentVolumeClaim:
             claimName: {{ .Release.Name }}-db-pvc
+        {{- with .Values.deployment.db.sharedMemorySize }}
+        # Parallel queries allocate dynamic shared memory in /dev/shm, of which a container gets only 64 MB by default.
+        # Memory-backed, so it counts against the pod's memory limit.
+        - name: shared-memory
+          emptyDir:
+            medium: Memory
+            sizeLimit: {{ . }}
+        {{- end }}

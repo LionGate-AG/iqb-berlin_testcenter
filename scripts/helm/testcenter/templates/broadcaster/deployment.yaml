@@ -21,7 +21,7 @@ spec:
       terminationGracePeriodSeconds: {{ .Values.deployment.broadcaster.terminationGracePeriodSeconds }}
       {{- if .Values.deployment.broadcaster.topologySpreadConstraints }}
       topologySpreadConstraints:
-        {{- .Values.deployment.broadcaster.topologySpreadConstraints | toYaml | nindent 8 }}
+        {{- tpl (.Values.deployment.broadcaster.topologySpreadConstraints | toYaml) . | nindent 8 }}
       {{- end }}
       securityContext:
         runAsNonRoot: true

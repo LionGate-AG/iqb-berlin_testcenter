@@ -17,7 +17,7 @@ spec:
     spec:
       {{- if .Values.deployment.cacheServer.topologySpreadConstraints }}
       topologySpreadConstraints:
-        {{- .Values.deployment.cacheServer.topologySpreadConstraints | toYaml | nindent 8 }}
+        {{- tpl (.Values.deployment.cacheServer.topologySpreadConstraints | toYaml) . | nindent 8 }}
       {{- end }}
       securityContext:
         runAsNonRoot: true
@@ -47,6 +47,9 @@ spec:
             "--maxmemory-policy", "volatile-lru",
             "--save", '""',
             "--appendonly", "no"
+            {{- with .Values.config.cacheServer.maxClients }},
+            "--maxclients", {{ . | quote }}
+            {{- end }}
           ]
           ports:
             - name: http-container

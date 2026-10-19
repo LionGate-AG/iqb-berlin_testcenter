@@ -28,7 +28,7 @@ spec:
     spec:
       {{- if .Values.deployment.backend.topologySpreadConstraints }}
       topologySpreadConstraints:
-        {{- .Values.deployment.backend.topologySpreadConstraints | toYaml | nindent 8 }}
+        {{- tpl (.Values.deployment.backend.topologySpreadConstraints | toYaml) . | nindent 8 }}
       {{- end }}
       securityContext:
         runAsNonRoot: true

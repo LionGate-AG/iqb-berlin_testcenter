@@ -24,7 +24,7 @@ spec:
     spec:
       {{- if .Values.deployment.fileServer.topologySpreadConstraints }}
       topologySpreadConstraints:
-        {{- .Values.deployment.fileServer.topologySpreadConstraints | toYaml | nindent 8 }}
+        {{- tpl (.Values.deployment.fileServer.topologySpreadConstraints | toYaml) . | nindent 8 }}
       {{- end }}
       securityContext:
         runAsNonRoot: true
