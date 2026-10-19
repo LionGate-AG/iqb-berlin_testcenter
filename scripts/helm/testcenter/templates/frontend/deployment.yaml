@@ -2,6 +2,11 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {{ .Release.Name }}-frontend
+  annotations:
+    # The frontend readiness probe hits /api (proxied to the backend), so it can only become
+    # ready once the backend is up. Start it after the backend (wave 2) to avoid blocking the
+    # earlier waves: db (0) -> seed job (1) -> backend (2) -> frontend (3).
+    argocd.argoproj.io/sync-wave: "3"
 spec:
   replicas: {{ .Values.deployment.frontend.replicas }}
   {{- if .Values.deployment.frontend.strategy }}

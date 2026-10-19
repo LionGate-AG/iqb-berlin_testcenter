@@ -11,6 +11,7 @@
 
 ## Technisches
 - Der Brute-Force-Schutz (`BRUTE_FORCE_PROTECTION` in `.env.prod-template`) ist bei Neuinstallationen via docker-compose ausgeschaltet.
+- Helm-Chart unter Argo CD: Der Seed-Job läuft als Sync-Hook (Welle 1) statt als PostSync, das Backend folgt in Welle 2 und das Frontend in Welle 3, das Konfigurations-Volume entsteht in Welle 1. Bisher blockierte sich eine Erstinstallation selbst: PostSync wartet auf ein gesundes Backend, das ohne das vom Seed-Job angelegte Datenbankschema nicht gesund wird. Für `helm install` ändert sich nichts.
 
 # 19.0.0
 
