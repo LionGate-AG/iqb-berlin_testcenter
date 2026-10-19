@@ -127,7 +127,7 @@ class SystemConfig {
       $config['storage']['s3UseSSL'] = self::boolEnv('S3_USE_SSL');
       $config['storage']['s3AccessKey'] = self::stringEnv('S3_ACCESS_KEY', '');
       $config['storage']['s3SecretKey'] = self::stringEnv('S3_SECRET_KEY', '');
-      $config['storage']['presignTtl'] = self::stringEnv('S3_PRESIGN_TTL', '3600');
+      $config['storage']['presignTtl'] = self::intEnv('S3_PRESIGN_TTL', 3600);
     }
 
     $sessions = self::stringEnv('BRUTE_FORCE_PROTECTION');
@@ -188,8 +188,14 @@ class SystemConfig {
     return (int) trim($value);
   }
 
-  private static function stringEnv(string $name): string {
+  /**
+   * @param string|null $default returned when the variable is unset or empty
+   */
+  private static function stringEnv(string $name, ?string $default = null): string {
     $value = getEnv($name);
+    if (($default !== null) and (($value === false) or ($value === ''))) {
+      return $default;
+    }
     if (!isset($value)) {
         throw new Exception("Environment-variable missing: `$name`.");
     }

@@ -9,6 +9,7 @@
 - `make testcenter-update` endet, wenn man nach einem fehlgeschlagenen Daten-Backup oder nach übersprungenen Migrationsskripten das Fortfahren ablehnt. Bisher meldete das Skript zwar „update script finished“, spielte die neue Version aber trotzdem ein.
 - API: Berichte (`GET /workspace/{ws_id}/report/{type}`) ohne den optionalen Parameter `dataIds` umfassen alle Gruppen bzw. alle System-Checks des Arbeitsbereichs. Bisher brachen Log-, Antwort- und Review-Berichte mit einem SQL-Fehler ab, und der System-Check-Bericht war leer. (#1614)
 - Neu angelegte Personen-Sitzungen, Benutzer:innen, Arbeitsbereiche und Assets erhalten ihre ID aus derselben Datenbankanweisung (`returning id`). Bisher wurde sie mit einer zweiten Abfrage (`lastval()`) ermittelt, die hinter einem Connection-Pooler im Transaktionsmodus (z. B. PgBouncer) auf einer anderen Verbindung laufen und die ID einer fremden Sitzung liefern konnte.
+- Objektspeicher (`STORAGE_DRIVER=s3`): Fehlen `S3_REGION` oder `S3_PRESIGN_TTL` oder sind sie leer, gelten ihre Standardwerte `us-east-1` bzw. `3600`. Bisher wurden die Standardwerte nie angewendet: Ohne `S3_PRESIGN_TTL` startete das Backend nicht, ohne `S3_REGION` lief es mit leerer Region. Ein `S3_PRESIGN_TTL`, das keine nicht-negative ganze Zahl ist, beendet den Start mit einer Fehlermeldung.
 
 ## Technisches
 - Der Brute-Force-Schutz (`BRUTE_FORCE_PROTECTION` in `.env.prod-template`) ist bei Neuinstallationen via docker-compose ausgeschaltet.
