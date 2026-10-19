@@ -51,6 +51,7 @@ x-env-backend: &env-backend
   TESTCENTER_CACHE_AUTH_TOKEN: ${TESTCENTER_CACHE_AUTH_TOKEN:-false}
   TESTCENTER_AUTH_TOKEN_TTL: ${TESTCENTER_AUTH_TOKEN_TTL:-}
   TESTCENTER_ASYNC_TEST_LOGS: ${TESTCENTER_ASYNC_TEST_LOGS:-false}
+  TESTCENTER_BUFFER_TEST_STATE: ${TESTCENTER_BUFFER_TEST_STATE:-false}
 
 x-env-logging-conf: &env-logging-conf
   max-size: "200m"
@@ -181,10 +182,34 @@ services:
     networks:
       testcenter:
 
+  # Writes the test states the backend buffers in the cache server to the database (TESTCENTER_BUFFER_TEST_STATE). It
+  # runs whatever that switch says, so that states buffered before switching it off still arrive. Exactly one instance.
+  state-drainer:
+    image: iqbberlin/testcenter-backend:current
+    <<: *restart-policy
+    depends_on:
+      db:
+        condition: service_healthy
+      cache-server:
+        condition: service_started
+    entrypoint: [ "php", "/var/www/testcenter/backend/drain-test-states.php" ]
+    environment:
+      <<: *env-backend
+      STATE_DRAIN_INTERVAL_MS: ${STATE_DRAIN_INTERVAL_MS:-}
+      STATE_DRAIN_BATCH: ${STATE_DRAIN_BATCH:-}
+      STATE_DRAIN_REPORT_SEC: ${STATE_DRAIN_REPORT_SEC:-}
+    logging:
+      options:
+        <<: *env-logging-conf
+    networks:
+      testcenter:
+
   cache-server:
     image: ${DOCKERHUB_PROXY}redis:8.0-bookworm
     <<: *restart-policy
     user: redis
+    # volatile-lru evicts only keys with an expiry. The queues of the log and state drainers have none and rely on
+    # never being evicted.
     command: [
       "redis-server",
       "--requirepass", "${REDIS_PASSWORD}",

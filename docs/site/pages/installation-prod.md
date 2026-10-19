@@ -207,6 +207,8 @@ The cache service is a Redis container (`cache-server`) inside the application's
   [Scaling: Auth-Token Cache](./scaling-auth-cache.md).
 - With `TESTCENTER_ASYNC_TEST_LOGS=true`, the backend queues the test logs there, and the service `log-drainer` writes
   them to the database, see [Scaling: Async Test Logs](./scaling-async-logs.md).
+- With `TESTCENTER_BUFFER_TEST_STATE=true`, the backend keeps the state of running tests there, and the service
+  `state-drainer` writes it to the database, see [Scaling: Test-State Buffer](./scaling-test-state-buffer.md).
 
 It is configured in `.env.prod`:
 

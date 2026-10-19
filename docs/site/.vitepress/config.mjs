@@ -35,7 +35,8 @@ export default defineConfig({
           { text: 'Scaling: Connection Pooling', link: '/pages/scaling-connection-pooling' },
           { text: 'Scaling: Auth-Token Cache', link: '/pages/scaling-auth-cache' },
           { text: 'Scaling: Async Test Logs', link: '/pages/scaling-async-logs' },
-          { text: 'Scaling: Object Store', link: '/pages/scaling-object-store' }
+          { text: 'Scaling: Object Store', link: '/pages/scaling-object-store' },
+          { text: 'Scaling: Test-State Buffer', link: '/pages/scaling-test-state-buffer' }
         ]
       },
       {

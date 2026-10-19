@@ -206,6 +206,13 @@ config:
     # backend inserts directly. Switching this on also deploys the log drainer (deployment.logDrainer).
     # See the documentation page "Scaling: Async Test Logs".
     asyncTestLogs: false
+    # -- Keep the state of running tests in Redis; the state drainer writes it to the database in batches
+    # Only worth it for large installations, where one update per state change becomes a large share of the
+    # database load. Requires cacheAuthToken. The database lags by up to one drain interval; the backend reads
+    # Redis first. States not yet written are lost when the cache server restarts. When Redis is unavailable or
+    # refuses the write, the backend updates the database directly. Switching this on also deploys the state
+    # drainer (deployment.stateDrainer). See the documentation page "Scaling: Test-State Buffer".
+    bufferTestState: false
 
   cacheServer:
     # -- Maximum memory allocation for Redis
@@ -463,6 +470,30 @@ deployment:
     idleMs: 200
     # -- Seconds between two status lines in the log ("depth=... inserted=... refused=...")
     # A depth that keeps growing means the drainer is stuck or too slow.
+    reportSeconds: 30
+    # -- One PHP process holding at most one batch
+    resources:
+      limits:
+        cpu: 500m
+        memory: 256Mi
+      requests:
+        cpu: 50m
+        memory: 64Mi
+
+  # -- Drainer of the test-state buffer (see config.backend.bufferTestState)
+  # Runs the backend image with `php backend/drain-test-states.php`, always exactly one replica. It is deployed
+  # whenever bufferTestState is on, or when `enabled` is true. It drains whatever bufferTestState says, so keep it
+  # enabled when switching bufferTestState off, until its log shows `pending=0`.
+  stateDrainer:
+    # -- Deploy the drainer even while bufferTestState is off
+    enabled: false
+    # -- Milliseconds between two rounds, each writing all pending states; at least 100
+    # This is how far the database may lag behind the state the backend serves from Redis.
+    intervalMs: 2000
+    # -- Rows per update, at most 32767 (PostgreSQL's limit of bound parameters per statement)
+    batchSize: 500
+    # -- Seconds between two status lines in the log ("pending=... written=... fallbacks=...")
+    # A pending count that keeps growing means the drainer is stuck or too slow.
     reportSeconds: 30
     # -- One PHP process holding at most one batch
     resources:

@@ -253,11 +253,25 @@ class SuperAdminDAO extends DAO {
 
   public function deleteWorkspaces(array $wsIds): void {
     foreach ($wsIds as $wsId) {
+      // The delete cascades to the workspace's tests, whose cached states have to go with them.
+      /** @var list<array{id: int|string}>|null $tests */
+      $tests = TestStateBuffer::cacheEnabled()
+        ? $this->_(
+          'select tests.id
+            from tests
+              inner join person_sessions on tests.person_id = person_sessions.id
+              inner join login_sessions on person_sessions.login_sessions_id = login_sessions.id
+            where login_sessions.workspace_id = :ws_id',
+          [':ws_id' => $wsId],
+          true
+        )
+        : [];
       $this->_(
         'delete from workspaces
                 where workspaces.id = :ws_id',
         [':ws_id' => $wsId]
       );
+      TestStateBuffer::drop(array_map('intval', array_column($tests ?? [], 'id')));
     }
     // The delete cascades to the workspaces' login and person sessions. Their tokens are not known here.
     CacheService::flushAuthTokens();

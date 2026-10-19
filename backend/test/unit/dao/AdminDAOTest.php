@@ -6,6 +6,7 @@ declare(strict_types=1);
 use PHPUnit\Framework\TestCase;
 
 require_once "test/unit/test-helper/AssertsArraysIgnoringOrder.php";
+require_once "test/unit/test-helper/UsesTestStateCache.php";
 
 /**
  * @runTestsInSeparateProcesses
@@ -13,6 +14,7 @@ require_once "test/unit/test-helper/AssertsArraysIgnoringOrder.php";
  */
 final class AdminDAOTest extends TestCase {
   use AssertsArraysIgnoringOrder;
+  use UsesTestStateCache;
 
   private AdminDAO $dbc;
 
@@ -322,6 +324,52 @@ final class AdminDAOTest extends TestCase {
     $this->assertEquals(0, $this->countTableRows('unit_logs'));
     $this->assertEquals(0, $this->countTableRows('unit_reviews'));
     $this->assertEquals(0, $this->countTableRows('test_reviews'));
+  }
+
+  function test_deleteResultData_dropsTheCachedStatesOfTheGroup(): void {
+    $this->enableTestStateCache(true);
+    TestStateBuffer::push(1, 1, '{"A":"1"}');
+    TestStateBuffer::store(2, 1, '{}');
+    TestStateBuffer::push(3, 5, '{"B":"1"}');
+
+    $this->dbc->deleteResultData(1, 'sample_group');
+
+    $this->assertNull(TestStateBuffer::get(1));
+    $this->assertNull(TestStateBuffer::get(2));
+    $this->assertNotNull(TestStateBuffer::get(3), 'a test of another group keeps its state');
+    $this->assertSame([3], array_keys(TestStateBuffer::pending(10)));
+  }
+
+  function test_deleteResultDataByPersonAndBooklet_dropsTheCachedStatesOfTheDeletedTests(): void {
+    $this->enableTestStateCache(true);
+    TestStateBuffer::push(1, 1, '{"A":"1"}');
+    TestStateBuffer::push(2, 1, '{"A":"2"}');
+
+    $this->dbc->deleteResultDataByPersonAndBooklet(1, [
+      ['loginName' => 'sample_user', 'code' => 'xxx', 'nameSuffix' => 'xxx', 'bookletName' => 'first sample test']
+    ]);
+
+    $this->assertSame(0, (int) ($this->dbc->_('select count(*) as c from tests where id = 1')['c'] ?? -1));
+    $this->assertNull(TestStateBuffer::get(1));
+    $this->assertSame([2], array_keys(TestStateBuffer::pending(10)));
+  }
+
+  public function test_getTestSessions_showsTheBufferedState(): void {
+    $this->enableTestStateCache(true);
+    TestStateBuffer::push(1, 1, '{"CURRENT_UNIT_ID":"UNIT.SAMPLE"}');
+
+    /** @var list<SessionChangeMessage> $sessions */
+    $sessions = $this->dbc->getTestSessions(1, ['sample_group'])->asArray();
+    /** @var array<int, array{testState: array<string, mixed>, unitState: array<string, mixed>}> $sessionsByTest */
+    $sessionsByTest = [];
+    foreach ($sessions as $session) {
+      /** @var array{testId: int, testState: array<string, mixed>, unitState: array<string, mixed>} $asArray */
+      $asArray = $session->jsonSerialize();
+      $sessionsByTest[$asArray['testId']] = $asArray;
+    }
+
+    $this->assertSame(['CURRENT_UNIT_ID' => 'UNIT.SAMPLE', 'status' => 'running'], $sessionsByTest[1]['testState']);
+    $this->assertSame(['PRESENTATIONCOMPLETE' => 'yes'], $sessionsByTest[1]['unitState']);
   }
 
   public function test_getResultStats() {

@@ -32,6 +32,10 @@ class SystemConfig {
   public static int $testLogs_drainIdleMs;
   public static int $testLogs_drainReportSeconds;
   public static bool $cache_presignedUrls = false;
+  public static bool $testState_buffer = false;
+  public static int $testState_drainIntervalMs;
+  public static int $testState_drainBatchSize;
+  public static int $testState_drainReportSeconds;
   public static string $password_salt = "t";
   public static string $system_version;
   public static int $system_veronaMax;
@@ -143,6 +147,12 @@ class SystemConfig {
     $config['testLogs']['drainBatchSize'] = self::intEnv('LOG_DRAIN_BATCH', 5000);
     $config['testLogs']['drainIdleMs'] = self::intEnv('LOG_DRAIN_IDLE_MS', 200);
     $config['testLogs']['drainReportSeconds'] = self::intEnv('LOG_DRAIN_REPORT_SEC', 30);
+
+    $config['testState']['buffer'] = self::boolEnv('TESTCENTER_BUFFER_TEST_STATE');
+    // settings of the drainer (backend/drain-test-states.php)
+    $config['testState']['drainIntervalMs'] = self::intEnv('STATE_DRAIN_INTERVAL_MS', 2000);
+    $config['testState']['drainBatchSize'] = self::intEnv('STATE_DRAIN_BATCH', 500);
+    $config['testState']['drainReportSeconds'] = self::intEnv('STATE_DRAIN_REPORT_SEC', 30);
 
     $sessions = self::stringEnv('BRUTE_FORCE_PROTECTION');
     $config['bruteForceProtection']['sessions'] = $sessions;
