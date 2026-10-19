@@ -181,4 +181,24 @@ class CacheServiceTest extends TestCase {
     CacheService::invalidateAuthToken('person-token');
     $this->assertNull(CacheService::getGroupToken(1, 'sample_group'));
   }
+
+  function test_connection_verify_keepsHealthyConnection(): void {
+    $this->assertSame($this->redis, CacheService::connection(true));
+  }
+
+  function test_connection_verify_dropsDeadConnection(): void {
+    $this->redis->failing = true;
+    SystemConfig::$cacheServer_host = '127.0.0.1';
+    SystemConfig::$cacheServer_port = 1;
+
+    $this->assertSame($this->redis, CacheService::connection(), 'without verify, the dead handle is handed out');
+    $this->assertNull(CacheService::connection(true));
+    $this->assertNull((new ReflectionProperty(CacheService::class, 'redis'))->getValue());
+  }
+
+  function test_reset(): void {
+    CacheService::reset();
+
+    $this->assertNull((new ReflectionProperty(CacheService::class, 'redis'))->getValue());
+  }
 }

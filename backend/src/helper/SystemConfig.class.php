@@ -16,6 +16,10 @@ class SystemConfig {
   public static array $bruteForceProtection_sessions = [];
   public static bool $cache_authToken = false;
   public static int $cache_authTokenTtl;
+  public static bool $testLogs_async = false;
+  public static int $testLogs_drainBatchSize;
+  public static int $testLogs_drainIdleMs;
+  public static int $testLogs_drainReportSeconds;
   public static string $password_salt = "t";
   public static string $system_version;
   public static int $system_veronaMax;
@@ -106,6 +110,12 @@ class SystemConfig {
 
     $config['cache']['authToken'] = self::boolEnv('TESTCENTER_CACHE_AUTH_TOKEN');
     $config['cache']['authTokenTtl'] = self::intEnv('TESTCENTER_AUTH_TOKEN_TTL', 300);
+
+    $config['testLogs']['async'] = self::boolEnv('TESTCENTER_ASYNC_TEST_LOGS');
+    // settings of the drainer (backend/drain-logs.php)
+    $config['testLogs']['drainBatchSize'] = self::intEnv('LOG_DRAIN_BATCH', 5000);
+    $config['testLogs']['drainIdleMs'] = self::intEnv('LOG_DRAIN_IDLE_MS', 200);
+    $config['testLogs']['drainReportSeconds'] = self::intEnv('LOG_DRAIN_REPORT_SEC', 30);
 
     $sessions = self::stringEnv('BRUTE_FORCE_PROTECTION');
     $config['bruteForceProtection']['sessions'] = $sessions;

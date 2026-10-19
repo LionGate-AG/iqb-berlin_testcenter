@@ -35,13 +35,51 @@ class CacheService {
    *
    * Unlike connect() this never throws: the callers are optimisations which fall back to the database when it
    * returns null.
+   *
+   * @param bool $verify for long-running processes only: PING the handle and reconnect if its socket has died. A web
+   *   request does not need this, because the handle does not outlive the request; a worker that keeps it for days
+   *   would otherwise go on using a dead socket forever.
    */
-  private static function connection(): ?Redis {
+  public static function connection(bool $verify = false): ?Redis {
     try {
-      return self::connect() ? self::$redis : null;
+      if (!self::connect()) {
+        return null;
+      }
+      if ($verify and !self::isAlive()) {
+        // the client connects lazily, so only a command on the new handle shows whether the server is back
+        self::reset();
+        if (!self::connect() or !self::isAlive()) {
+          self::reset();
+          return null;
+        }
+      }
+      return self::$redis;
     } catch (Throwable) {
       return null;
     }
+  }
+
+  private static function isAlive(): bool {
+    try {
+      self::$redis?->ping();
+      return isset(self::$redis);
+    } catch (Throwable) {
+      return false;
+    }
+  }
+
+  /**
+   * Drops the shared handle, so the next call dials again.
+   */
+  public static function reset(): void {
+    if (isset(self::$redis)) {
+      try {
+        self::$redis->close();
+      } catch (Throwable) {
+        // the connection is dropped because it is broken; closing it may fail for the same reason
+      }
+    }
+    self::$redis = null;
   }
 
   // Auth-token cache

@@ -116,6 +116,55 @@ class TestDAOTest extends TestCase {
     $this->assertEmpty($writtenLogs);
   }
 
+  function test_addTestLogs_async_queuesInsteadOfInserting(): void {
+    $redis = $this->enableAsyncTestLogs();
+
+    $this->dbc->addTestLogs([new TestLog(1, 'LOG_KEY_QUEUED', 1623456789, 'content')]);
+
+    $this->assertSame(['[1,"LOG_KEY_QUEUED",1623456789,"content"]'], $redis->lists['test-logs:queue']);
+    $this->assertSame(0, $this->countTestLogs('LOG_KEY_QUEUED'));
+  }
+
+  function test_addTestLogs_async_insertsWhenRedisFails(): void {
+    $redis = $this->enableAsyncTestLogs();
+    $redis->failing = true;
+
+    $this->dbc->addTestLogs([new TestLog(1, 'LOG_KEY_FALLBACK', 1623456789)]);
+
+    $this->assertSame(1, $this->countTestLogs('LOG_KEY_FALLBACK'));
+  }
+
+  function test_addTestLogs_async_insertsWhenRedisIsUnreachable(): void {
+    $this->enableAsyncTestLogs();
+    (new ReflectionProperty(CacheService::class, 'redis'))->setValue(null, null);
+    SystemConfig::$cacheServer_host = '127.0.0.1';
+    SystemConfig::$cacheServer_port = 1;
+
+    $this->dbc->addTestLogs([new TestLog(1, 'LOG_KEY_FALLBACK', 1623456789)]);
+
+    $this->assertSame(1, $this->countTestLogs('LOG_KEY_FALLBACK'));
+  }
+
+  function test_addTestLogs_async_insertsWhenQueueIsFull(): void {
+    $redis = $this->enableAsyncTestLogs();
+    $redis->lists['test-logs:queue'] = array_fill(0, LogBuffer::MAX_DEPTH, '[1,"key",1,""]');
+
+    $this->dbc->addTestLogs([new TestLog(1, 'LOG_KEY_FALLBACK', 1623456789)]);
+
+    $this->assertSame(1, $this->countTestLogs('LOG_KEY_FALLBACK'));
+    $this->assertCount(LogBuffer::MAX_DEPTH, $redis->lists['test-logs:queue']);
+  }
+
+  function test_addTestLogs_switchedOff_insertsWithoutTouchingRedis(): void {
+    $redis = $this->enableAsyncTestLogs();
+    SystemConfig::$testLogs_async = false;
+
+    $this->dbc->addTestLogs([new TestLog(1, 'LOG_KEY_DIRECT', 1623456789)]);
+
+    $this->assertSame(1, $this->countTestLogs('LOG_KEY_DIRECT'));
+    $this->assertSame(0, $redis->calls);
+  }
+
   function test_getUnitState() {
     $expected = ['SOME_STATE' => 'WHATEVER'];
     $result = $this->dbc->getUnitState(1, 'UNIT_1');
@@ -467,4 +516,23 @@ class TestDAOTest extends TestCase {
     $this->assertEmpty($writtenLogs);
   }
 
+
+  private function enableAsyncTestLogs(): RedisFake {
+    require_once "test/unit/mock-classes/RedisFake.php";
+    SystemConfig::$cacheServer_host = 'cache-server';
+    SystemConfig::$cacheServer_port = 6379;
+    SystemConfig::$cacheServer_password = 'secret';
+    SystemConfig::$testLogs_async = true;
+    $redis = new RedisFake();
+    (new ReflectionProperty(CacheService::class, 'redis'))->setValue(null, $redis);
+    return $redis;
+  }
+
+  private function countTestLogs(string $logKey): int {
+    $result = $this->dbc->_(
+      'select count(*) as c from test_logs where booklet_id = 1 and logentry like :logKey',
+      [':logKey' => $logKey . '%']
+    );
+    return (int) ($result['c'] ?? 0);
+  }
 }
