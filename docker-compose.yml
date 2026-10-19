@@ -15,6 +15,27 @@ x-env-db: &env-db
   DB_USER: ${DB_USER}
   DB_PASSWORD: ${DB_PASSWORD}
 
+# configuration the backend code reads, shared by the backend and the test-log drainer
+x-env-backend: &env-backend
+  BROADCASTER_ENABLED: ${BROADCASTER_ENABLED}
+  FILE_SERVER_ENABLED: ${FILE_SERVER_ENABLED}
+  BRUTE_FORCE_PROTECTION: ${BRUTE_FORCE_PROTECTION:-}
+  SERVER_KEY: ${SERVER_KEY}
+  XML_SCHEMA_VALIDATION: ${XML_SCHEMA_VALIDATION:-}
+  <<: [ *env-redis, *env-db ]
+  # `pgbouncer` routes the backend through the optional PgBouncer service (profile `pgbouncer`).
+  DB_HOST: ${DB_HOST:-db}
+  DB_PORT: 5432
+  DB_PERSISTENT_CONNECTIONS: ${DB_PERSISTENT_CONNECTIONS:-false}
+  PASSWORD_SALT: ${PASSWORD_SALT}
+  PASSWORD_MIN_LENGTH: ${PASSWORD_MIN_LENGTH}
+  PASSWORD_PATTERN: ${PASSWORD_PATTERN}
+  REQUIRE_LOGIN_PASSWORD: ${REQUIRE_LOGIN_PASSWORD:-false}
+  ADMIN_INIT_PASSWORD: ${ADMIN_INIT_PASSWORD}
+  TESTCENTER_CACHE_AUTH_TOKEN: ${TESTCENTER_CACHE_AUTH_TOKEN:-false}
+  TESTCENTER_AUTH_TOKEN_TTL: ${TESTCENTER_AUTH_TOKEN_TTL:-}
+  TESTCENTER_ASYNC_TEST_LOGS: ${TESTCENTER_ASYNC_TEST_LOGS:-false}
+
 x-env-logging-conf: &env-logging-conf
   max-size: "200m"
   max-file: "10"
@@ -97,21 +118,7 @@ services:
       cache-server:
         condition: service_started
     environment:
-      BROADCASTER_ENABLED: ${BROADCASTER_ENABLED}
-      FILE_SERVER_ENABLED: ${FILE_SERVER_ENABLED}
-      BRUTE_FORCE_PROTECTION: ${BRUTE_FORCE_PROTECTION:-}
-      SERVER_KEY: ${SERVER_KEY}
-      XML_SCHEMA_VALIDATION: ${XML_SCHEMA_VALIDATION:-}
-      <<: [ *env-redis, *env-db ]
-      # `pgbouncer` routes the backend through the optional PgBouncer service (profile `pgbouncer`).
-      DB_HOST: ${DB_HOST:-db}
-      DB_PORT: 5432
-      DB_PERSISTENT_CONNECTIONS: ${DB_PERSISTENT_CONNECTIONS:-false}
-      PASSWORD_SALT: ${PASSWORD_SALT}
-      PASSWORD_MIN_LENGTH: ${PASSWORD_MIN_LENGTH}
-      PASSWORD_PATTERN: ${PASSWORD_PATTERN}
-      REQUIRE_LOGIN_PASSWORD: ${REQUIRE_LOGIN_PASSWORD:-false}
-      ADMIN_INIT_PASSWORD: ${ADMIN_INIT_PASSWORD}
+      <<: *env-backend
     logging:
       options:
         <<: *env-logging-conf
@@ -125,6 +132,28 @@ services:
     volumes:
       - backend_vol:/var/www/testcenter/data
       - /var/www/testcenter/data/.schemas
+    networks:
+      testcenter:
+
+  # Writes the test logs the backend queues in the cache server to the database (TESTCENTER_ASYNC_TEST_LOGS). It runs
+  # whatever that switch says, so that rows queued before switching it off still arrive. Exactly one instance.
+  log-drainer:
+    image: iqbberlin/testcenter-backend:current
+    <<: *restart-policy
+    depends_on:
+      db:
+        condition: service_healthy
+      cache-server:
+        condition: service_started
+    entrypoint: [ "php", "/var/www/testcenter/backend/drain-logs.php" ]
+    environment:
+      <<: *env-backend
+      LOG_DRAIN_BATCH: ${LOG_DRAIN_BATCH:-}
+      LOG_DRAIN_IDLE_MS: ${LOG_DRAIN_IDLE_MS:-}
+      LOG_DRAIN_REPORT_SEC: ${LOG_DRAIN_REPORT_SEC:-}
+    logging:
+      options:
+        <<: *env-logging-conf
     networks:
       testcenter:
 

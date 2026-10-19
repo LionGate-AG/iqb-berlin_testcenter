@@ -214,6 +214,16 @@ class SessionDAOTest extends TestCase {
     $this->assertEquals($expectation, $result);
   }
 
+  function test_getToken_severalTypes() {
+    $result = $this->dbc->getToken('person-token', ['login', 'person', 'admin']);
+    $this->assertEquals('person', $result->getType());
+  }
+
+  function test_getToken_noKnownType() {
+    $this->expectException(HttpError::class);
+    $this->dbc->getToken('person-token', ['unknown']);
+  }
+
   function test_getToken_wrongToken() {
     $this->expectException(HttpError::class);
     $this->dbc->getToken('not-existing', ['admin']);
@@ -504,7 +514,7 @@ class SessionDAOTest extends TestCase {
     );
 
     $expectation = new LoginSession(
-      10, // 9th row, but MySQL give it ID 10
+      9, // the repeated login above found its session and inserted nothing, so it consumed no id
       'static:login:yet_another_one',
       'group-token', // as given in testdata.sql
       $anotherLogin
@@ -672,12 +682,20 @@ class SessionDAOTest extends TestCase {
     $this->assertTrue($result);
   }
 
-  public function test_ownsTest() {
-    $result = $this->dbc->ownsTest('person-token', "1");
-    $this->assertTrue($result);
+  public function test_getOwnedTest(): void {
+    // person session 1 ('person-token') owns test 1, person session 4 ('person-of-future-login-token') owns none
+    $result = $this->dbc->getOwnedTest(1, 1);
+    $this->assertNotNull($result);
+    $this->assertSame(['CURRENT_UNIT_ID' => 'UNIT_1'], JSON::decode($result['laststate'], true));
 
-    $result = $this->dbc->ownsTest('person-of-future-login-token', "1");
-    $this->assertFalse($result);
+    $this->assertNull($this->dbc->getOwnedTest(4, 1));
+    $this->assertNull($this->dbc->getOwnedTest(1, 99999));
+  }
+
+  public function test_groupTokenExists(): void {
+    $this->assertTrue($this->dbc->groupTokenExists(1, 'group-token'));
+    $this->assertFalse($this->dbc->groupTokenExists(2, 'group-token'));
+    $this->assertFalse($this->dbc->groupTokenExists(1, 'not-existing'));
   }
 
   public function test_getOrCreateGroupToken(): void {
@@ -698,6 +716,197 @@ class SessionDAOTest extends TestCase {
     $t2 = $worker->submit(new CreateGroupTokenTask($this->testLoginSession->getLogin(), 2));
 
     $this->assertEquals($t1->await(), $t2->await());
+  }
+
+  public function test_getToken_person_isServedFromCache(): void {
+    $redis = $this->enableAuthTokenCache();
+    $fromDatabase = $this->dbc->getToken('person-token', ['person']);
+    $this->assertArrayHasKey('auth-token:person:person-token', $redis->store);
+
+    // changed behind the application's back, so only a cache hit still finds the token
+    $this->dbc->_("update person_sessions set token = null where token = 'person-token'");
+
+    $this->assertEquals($fromDatabase, $this->dbc->getToken('person-token', ['person']));
+  }
+
+  public function test_getToken_cacheHit_isValidatedLikeAMiss(): void {
+    $redis = $this->enableAuthTokenCache();
+    $row = [
+      'token' => 'cached-token',
+      'id' => 1,
+      'type' => 'person',
+      'workspaceId' => 1,
+      'mode' => 'run-hot-return',
+      'validTo' => '2000-01-02 10:00:00+01',
+      'group' => 'sample_group'
+    ];
+    $redis->store['auth-token:person:cached-token'] = (string) json_encode($row);
+    $redis->store['auth-token:person:cached-token-of-removed-login'] = (string) json_encode(
+      ['token' => 'cached-token-of-removed-login', 'workspaceId' => null, 'validTo' => null] + $row
+    );
+
+    try {
+      $this->dbc->getToken('cached-token', ['person']);
+      $this->fail('expired session from cache was accepted');
+    } catch (HttpError $error) {
+      $this->assertEquals(410, $error->getCode());
+    }
+
+    try {
+      $this->dbc->getToken('cached-token-of-removed-login', ['person']);
+      $this->fail('removed login from cache was accepted');
+    } catch (HttpError $error) {
+      $this->assertEquals(410, $error->getCode());
+      $this->assertStringContainsString('Login removed', $error->getMessage());
+    }
+  }
+
+  public function test_getToken_cacheIsOnlyConsultedForPersonTokens(): void {
+    $this->enableAuthTokenCache();
+    $this->dbc->getToken('person-token', ['person']);
+
+    $this->expectException(HttpError::class);
+    $this->expectExceptionCode(403);
+    $this->dbc->getToken('person-token', ['admin']);
+  }
+
+  public function test_getToken_adminAndLoginTokensAreNotCached(): void {
+    $redis = $this->enableAuthTokenCache();
+
+    $this->dbc->getToken('admin_token', ['admin', 'person']);
+    $this->dbc->getToken('nice_token', ['login', 'person']);
+
+    $this->assertEmpty($redis->store);
+  }
+
+  public function test_getToken_rejectedTokenIsNotCached(): void {
+    $redis = $this->enableAuthTokenCache();
+
+    try {
+      $this->dbc->getToken('person-of-expired-login-token', ['person']);
+      $this->fail('expired session was accepted');
+    } catch (HttpError) {
+    }
+
+    $this->assertEmpty($redis->store);
+  }
+
+  public function test_getToken_fallsBackToDatabaseWhenRedisFails(): void {
+    $redis = $this->enableAuthTokenCache();
+    $redis->failing = true;
+
+    $result = $this->dbc->getToken('person-token', ['person']);
+
+    $this->assertEquals('person-token', $result->getToken());
+  }
+
+  public function test_getToken_fallsBackToDatabaseWhenRedisIsUnreachable(): void {
+    $this->enableAuthTokenCache();
+    (new ReflectionProperty(CacheService::class, 'redis'))->setValue(null, null);
+    SystemConfig::$cacheServer_host = '127.0.0.1';
+    SystemConfig::$cacheServer_port = 1;
+
+    $result = $this->dbc->getToken('person-token', ['person']);
+
+    $this->assertEquals('person-token', $result->getToken());
+  }
+
+  public function test_createOrUpdatePersonSession_invalidatesRotatedToken(): void {
+    $this->enableAuthTokenCache();
+    $this->dbc->getToken('person-token', ['person']);
+    $loginSessionOfPersonToken = new LoginSession(
+      4,
+      'test_token',
+      'group-token',
+      new Login(
+        'sample_user',
+        '',
+        'run-hot-return',
+        'sample_group',
+        'Sample Group',
+        ['xxx' => ['BOOKLET.SAMPLE-1']],
+        1,
+        TimeStamp::fromXMLFormat('1/1/2030 12:00')
+      )
+    );
+
+    $personSession = $this->dbc->createOrUpdatePersonSession($loginSessionOfPersonToken, 'xxx');
+
+    $this->assertNotEquals('person-token', $personSession->getPerson()->getToken());
+    $this->expectException(HttpError::class);
+    $this->expectExceptionCode(403);
+    $this->dbc->getToken('person-token', ['person']);
+  }
+
+  public function test_deletePersonToken_invalidatesCache(): void {
+    $this->enableAuthTokenCache();
+    $authToken = $this->dbc->getToken('person-token', ['person']);
+
+    $this->dbc->deletePersonToken($authToken);
+
+    $this->expectException(HttpError::class);
+    $this->expectExceptionCode(403);
+    $this->dbc->getToken('person-token', ['person']);
+  }
+
+  public function test_deleteResultData_invalidatesCache(): void {
+    $this->enableAuthTokenCache();
+    $this->dbc->getToken('person-token', ['person']);
+    $this->dbc->getOrCreateGroupToken(1, 'sample_group', 'Sample Group');
+
+    (new AdminDAO())->deleteResultData(1, 'sample_group');
+
+    $this->assertFalse($this->dbc->groupTokenExists(1, 'group-token'));
+    $this->expectException(HttpError::class);
+    $this->expectExceptionCode(403);
+    $this->dbc->getToken('person-token', ['person']);
+  }
+
+  public function test_deleteLoginSource_invalidatesCache(): void {
+    $this->enableAuthTokenCache();
+    $this->dbc->getToken('person-token', ['person']);
+
+    (new WorkspaceDAO(1, '/data_dir/ws_1'))->deleteLoginSource('testdata.sql');
+
+    $this->expectException(HttpError::class);
+    $this->expectExceptionCode(410);
+    $this->dbc->getToken('person-token', ['person']);
+  }
+
+  public function test_getOrCreateGroupToken_isServedFromCache(): void {
+    $redis = $this->enableAuthTokenCache();
+    $this->dbc->getOrCreateGroupToken(1, 'sample_group', 'Sample Group');
+    $this->dbc->getOrCreateGroupToken(1, 'new_group', 'New Group');
+    $this->assertSame('group-token', $redis->store['group-session-token:1:sample_group']);
+    $newGroupToken = $redis->store['group-session-token:1:new_group'];
+
+    // changed behind the application's back, so only a cache hit still finds the tokens
+    $this->dbc->_("update login_session_groups set token = 'changed-' || token");
+
+    $this->assertSame('group-token', $this->dbc->getOrCreateGroupToken(1, 'sample_group', 'Sample Group'));
+    $this->assertSame($newGroupToken, $this->dbc->getOrCreateGroupToken(1, 'new_group', 'New Group'));
+    $this->assertTrue($this->dbc->groupTokenExists(1, 'group-token'));
+  }
+
+  public function test_groupTokenExists_cachesOnlyPositiveResults(): void {
+    $redis = $this->enableAuthTokenCache();
+
+    $this->assertTrue($this->dbc->groupTokenExists(1, 'review-group-token'));
+    $this->assertFalse($this->dbc->groupTokenExists(1, 'not-existing-group-token'));
+
+    $this->assertSame(['group-session-valid:1:review-group-token'], array_keys($redis->store));
+  }
+
+  private function enableAuthTokenCache(): RedisFake {
+    require_once "test/unit/mock-classes/RedisFake.php";
+    SystemConfig::$cacheServer_host = 'cache-server';
+    SystemConfig::$cacheServer_port = 6379;
+    SystemConfig::$cacheServer_password = 'secret';
+    SystemConfig::$cache_authToken = true;
+    SystemConfig::$cache_authTokenTtl = 300;
+    $redis = new RedisFake();
+    (new ReflectionProperty(CacheService::class, 'redis'))->setValue(null, $redis);
+    return $redis;
   }
 
   private function countTableRows(string $tableName): int {

@@ -142,8 +142,8 @@ CREATE TABLE login_sessions (
     ON DELETE CASCADE ON UPDATE CASCADE
 );
 
-CREATE INDEX index_fk_login_workspace   ON login_sessions (workspace_id);
-CREATE INDEX index_fk_logins            ON login_sessions (name);
+-- No single-column indexes on workspace_id or name: login_sessions_groups_fk and unique_login_session lead with
+-- them, and every further index costs each login's insert.
 CREATE INDEX login_sessions_token_index ON login_sessions (token);
 CREATE INDEX login_sessions_groups_fk   ON login_sessions (workspace_id, group_name);
 
@@ -165,7 +165,7 @@ CREATE TABLE person_sessions (
     FOREIGN KEY (login_sessions_id) REFERENCES login_sessions (id) ON DELETE CASCADE
 );
 
-CREATE INDEX index_fk_person_login       ON person_sessions (login_sessions_id);
+-- No single-column index on login_sessions_id: unique_person_session leads with it.
 CREATE INDEX person_sessions_token_index ON person_sessions (token);
 
 
@@ -187,7 +187,7 @@ CREATE TABLE tests (
     FOREIGN KEY (person_id) REFERENCES person_sessions (id) ON DELETE CASCADE
 );
 
-CREATE INDEX index_fk_booklet_person ON tests (person_id);
+-- No single-column index on person_id: tests_person_id_name_key leads with it.
 
 
 -- =====================================================================
@@ -565,6 +565,6 @@ CREATE TRIGGER unit_reviews_reviewtime_bu
 -- patches it contains. Must name the newest patch in patches.d that is folded in here; with
 -- patches.d empty it is the release this schema belongs to.
 INSERT INTO meta ("metaKey", value, category)
-VALUES ('dbSchemaVersion', '18.3.0', NULL);
+VALUES ('dbSchemaVersion', '19.1.0', NULL);
 
 COMMIT;

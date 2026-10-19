@@ -259,6 +259,8 @@ class SuperAdminDAO extends DAO {
         [':ws_id' => $wsId]
       );
     }
+    // The delete cascades to the workspaces' login and person sessions. Their tokens are not known here.
+    CacheService::flushAuthTokens();
     // TODO ROLLBACK if one fails!
   }
 

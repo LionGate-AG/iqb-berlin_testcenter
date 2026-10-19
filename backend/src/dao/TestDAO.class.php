@@ -374,8 +374,12 @@ class TestDAO extends DAO {
   }
 
   // TODO use data-collection class for $statePatch (key-vale pairs)
-  public function updateTestState(int $testId, array $statePatch): array {
-    $testData = $this->_(
+  /**
+   * @param array{laststate: ?string}|null $testRow the test's row when the caller has just read it (see
+   *   SessionDAO::getOwnedTest), which saves reading it again; null reads it here
+   */
+  public function updateTestState(int $testId, array $statePatch, ?array $testRow = null): array {
+    $testData = $testRow ?? $this->_(
       'select tests.laststate from tests where tests.id=:testId',
       [
         ':testId' => $testId
@@ -584,6 +588,9 @@ class TestDAO extends DAO {
   }
 
   /**
+   * Records test-log rows. With TESTCENTER_ASYNC_TEST_LOGS switched on they are queued for the drainer (see
+   * LogBuffer); when that is off or the queue does not take them, they are inserted right away.
+   *
    * @param TestLog[] $testLogs
    */
   public function addTestLogs(array $testLogs): void {
@@ -595,6 +602,23 @@ class TestDAO extends DAO {
       if (!$testLog instanceof TestLog) {
         throw new InvalidArgumentException('All array elements must be TestLog instances');
       }
+    }
+
+    if (LogBuffer::push($testLogs)) {
+      return;
+    }
+
+    $this->insertTestLogs($testLogs);
+  }
+
+  /**
+   * Inserts test-log rows with one statement. Used by addTestLogs() and by the drainer of the queue (LogDrainer).
+   *
+   * @param TestLog[] $testLogs
+   */
+  public function insertTestLogs(array $testLogs): void {
+    if (empty($testLogs)) {
+      return;
     }
 
     $placeholders = [];

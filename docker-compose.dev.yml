@@ -99,6 +99,7 @@ services:
       - ./backend/config/cors.conf:/etc/nginx/conf.d/cors.conf
       - ./backend/run-server.sh:/run-server.sh
       - ./backend/check-db-compatibility.php:/var/www/testcenter/backend/check-db-compatibility.php
+      - ./backend/drain-logs.php:/var/www/testcenter/backend/drain-logs.php
       - ./backend/index.php:/var/www/testcenter/backend/index.php
       - ./backend/initialize.php:/var/www/testcenter/backend/initialize.php
       - ./backend/routes.php:/var/www/testcenter/backend/routes.php
@@ -121,6 +122,18 @@ services:
       - "9005:9003"
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    networks:
+      - testcenter
+
+  log-drainer:
+    build:
+      dockerfile: backend/Dockerfile
+      target: dev
+      args:
+        REGISTRY_PATH: ${DOCKERHUB_PROXY}
+    volumes:
+      - ./backend/drain-logs.php:/var/www/testcenter/backend/drain-logs.php
+      - ./backend/src:/var/www/testcenter/backend/src
     networks:
       - testcenter
 

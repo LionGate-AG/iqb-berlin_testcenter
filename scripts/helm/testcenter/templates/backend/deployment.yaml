@@ -132,6 +132,21 @@ spec:
                 configMapKeyRef:
                   name: {{ .Release.Name }}-backend-config
                   key: XML_SCHEMA_VALIDATION
+            - name: TESTCENTER_CACHE_AUTH_TOKEN
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ .Release.Name }}-backend-config
+                  key: TESTCENTER_CACHE_AUTH_TOKEN
+            - name: TESTCENTER_AUTH_TOKEN_TTL
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ .Release.Name }}-backend-config
+                  key: TESTCENTER_AUTH_TOKEN_TTL
+            - name: TESTCENTER_ASYNC_TEST_LOGS
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ .Release.Name }}-backend-config
+                  key: TESTCENTER_ASYNC_TEST_LOGS
             - name: ADMIN_INIT_PASSWORD
               valueFrom:
                 secretKeyRef:

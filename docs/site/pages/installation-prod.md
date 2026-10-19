@@ -203,6 +203,10 @@ The cache service is a Redis container (`cache-server`) inside the application's
 - Logins in the modes `monitor-group` and `monitor-study` are locked after 5 failed login attempts, until 30 minutes
   have passed since the last failed attempt. The backend counts the attempts in the cache service.
 - With `REDIS_CACHE_FILES=true`, the file server also keeps whole files there.
+- With `TESTCENTER_CACHE_AUTH_TOKEN=true`, the backend keeps the session tokens of test-takers there, see
+  [Scaling: Auth-Token Cache](./scaling-auth-cache.md).
+- With `TESTCENTER_ASYNC_TEST_LOGS=true`, the backend queues the test logs there, and the service `log-drainer` writes
+  them to the database, see [Scaling: Async Test Logs](./scaling-async-logs.md).
 
 It is configured in `.env.prod`:
 

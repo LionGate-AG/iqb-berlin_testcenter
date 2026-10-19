@@ -126,6 +126,8 @@ class WorkspaceDAO extends DAO {
     $this->_($sql, [], true);
 
     $this->updateValidUntilInPersonSession();
+    // mode, group and valid_until of existing sessions may have changed, and they are part of the cached token rows
+    CacheService::flushAuthTokens();
 
     return count($logins->asArray());
   }
@@ -141,6 +143,8 @@ class WorkspaceDAO extends DAO {
         ':ws_id' => $this->workspaceId
       ]
     );
+    // Tokens of the removed logins have to be rejected as "login removed"; they are not known one by one here.
+    CacheService::flushAuthTokens();
     return $this->lastAffectedRows;
   }
 

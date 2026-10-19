@@ -33,6 +33,8 @@ export default defineConfig({
           { text: 'Scaling: Autoscaling', link: '/pages/scaling-autoscaling' }
           { text: 'Scaling: Broadcaster', link: '/pages/scaling-broadcaster' }
           { text: 'Scaling: Connection Pooling', link: '/pages/scaling-connection-pooling' }
+          { text: 'Scaling: Auth-Token Cache', link: '/pages/scaling-auth-cache' },
+          { text: 'Scaling: Async Test Logs', link: '/pages/scaling-async-logs' }
         ]
       },
       {

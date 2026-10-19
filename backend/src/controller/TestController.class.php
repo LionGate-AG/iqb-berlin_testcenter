@@ -352,7 +352,10 @@ class TestController extends Controller {
       'timeStamp' => 'REQUIRED'
     ]);
 
-    $newState = self::testDAO()->updateTestState($testId, $statePatch);
+    // IsTestOwner has just read this test's row.
+    /** @var array{laststate: ?string} $ownedTest */
+    $ownedTest = $request->getAttribute('OwnedTest');
+    $newState = self::testDAO()->updateTestState($testId, $statePatch, $ownedTest);
 
     $testLogs = array_map(
       fn($entry) => new TestLog(
@@ -530,9 +533,17 @@ class TestController extends Controller {
       $response = $response->withHeader('SubscribeToken', $token);
     }
 
-    $testSession = self::testDAO()->getTestSession($testId);
-    if (isset($testSession['laststate']['CONNECTION']) && ($testSession['laststate']['CONNECTION'] == 'LOST')) {
-      self::updateTestState($testId, $testSession, 'CONNECTION', 'POLLING');
+    // The state IsTestOwner has just read tells whether the connection was lost. Only then is the full test
+    // session, a join over four tables, needed.
+    /** @var array{laststate: ?string} $ownedTest */
+    $ownedTest = $request->getAttribute('OwnedTest');
+    /** @var array<string, mixed> $lastState */
+    $lastState = JSON::decode($ownedTest['laststate'], true);
+    if (($lastState['CONNECTION'] ?? null) === 'LOST') {
+      $testSession = self::testDAO()->getTestSession($testId);
+      if (isset($testSession['laststate']['CONNECTION']) && ($testSession['laststate']['CONNECTION'] == 'LOST')) {
+        self::updateTestState($testId, $testSession, 'CONNECTION', 'POLLING');
+      }
     }
 
     return $response->withJson($commands);
