@@ -3,24 +3,18 @@
 
 use PHPUnit\Framework\TestCase;
 
-class TestDAOExposed extends TestDAO {
-  public function getOrCreateUnitId(int $testId, string $unitName, string $originalUnitId = ''): string {
-    return parent::getOrCreateUnitId($testId, $unitName, $originalUnitId);
-  }
-}
-
 /**
  * @runTestsInSeparateProcesses
  * @preserveGlobalState disabled
  */
 class TestDAOTest extends TestCase {
-  private TestDAOExposed $dbc;
+  private TestDAO $dbc;
 
   function setUp(): void {
     require_once "test/unit/TestDB.class.php";
 
     TestDB::setUp();
-    $this->dbc = new TestDAOExposed();
+    $this->dbc = new TestDAO();
     $this->dbc->runFile(ROOT_DIR . '/backend/test/unit/testdata.sql');
   }
 
@@ -38,6 +32,21 @@ class TestDAOTest extends TestCase {
     $result = $this->dbc->getTestState(3);
 
     $this->assertEquals($expected, $result);
+  }
+
+  function test_getOrCreateTest() {
+    $created = $this->dbc->getOrCreateTest(2, new TestName('BOOKLET.SAMPLE-1'), 'new label');
+    $this->assertEquals('BOOKLET.SAMPLE-1', $created->name);
+    $this->assertEquals('new label', $created->label);
+    $this->assertFalse($created->locked);
+
+    $again = $this->dbc->getOrCreateTest(2, new TestName('BOOKLET.SAMPLE-1'), 'other label');
+    $this->assertEquals($created->id, $again->id);
+    $this->assertEquals('new label', $again->label);
+
+    $existing = $this->dbc->getOrCreateTest(1, new TestName('BOOKLET.SAMPLE-1'), 'other label');
+    $this->assertEquals(2, $existing->id);
+    $this->assertEquals('second test label', $existing->label);
   }
 
   function test_addTestLogs() {
@@ -86,6 +95,25 @@ class TestDAOTest extends TestCase {
 
     $this->assertNotEmpty($actualLogEmptyContent);
     $this->assertEquals($expectedLogEmptyContent, $actualLogEmptyContent);
+  }
+
+  function test_addTestLogs_rejectsNonTestLogElements() {
+    $testId = 1;
+    $logKey = 'LOG_KEY_REJECTED';
+    $unitLog = new UnitLog($testId, 'UNIT_1', $logKey, 1623456789, '');
+
+    try {
+      $this->dbc->addTestLogs([new TestLog($testId, $logKey, 1623456789, ''), $unitLog]);
+      $this->fail('Expected InvalidArgumentException');
+    } catch (InvalidArgumentException) {
+    }
+
+    $writtenLogs = $this->dbc->_(
+      'select logentry from test_logs where booklet_id = :id and logentry = :logentry',
+      [':id' => $testId, ':logentry' => $logKey],
+      true
+    );
+    $this->assertEmpty($writtenLogs);
   }
 
   function test_getUnitState() {
@@ -364,28 +392,6 @@ class TestDAOTest extends TestCase {
     ];
     $resultOverwrite = $this->dbc->getDataParts(1, 'UNIT.SAMPLE');
     $this->assertEquals($expectedOverwrite, $resultOverwrite);
-
-    // Test overwrite when multiple parts have same partid
-    $this->dbc->updateDataParts(
-      1,
-      'UNIT.SAMPLE',
-      [
-        'other' => '{"other": "new_overwrite"}',
-        'other' => '{"other": "completely_new"}'
-      ],
-      'new-response-type',
-      1597903004000
-    );
-    $expectedOverwrite = [
-      'dataParts' => [
-        'all' => '{"name":"Elias Example","age":35}',
-        'other' => '{"other": "completely_new"}',
-        'added' => '{"stuff": "added"}'
-      ],
-      'dataType' => 'the-response-type' // TODO see getDataParts()
-    ];
-    $resultOverwrite = $this->dbc->getDataParts(1, 'UNIT.SAMPLE');
-    $this->assertEquals($expectedOverwrite, $resultOverwrite);
   }
 
   function test_addUnitLogs() {
@@ -428,6 +434,26 @@ class TestDAOTest extends TestCase {
 
     $this->assertNotEmpty($actualLogEmptyContent);
     $this->assertEquals($expectedLogEmptyContent, $actualLogEmptyContent);
+  }
+
+  function test_addUnitLogs_rejectsNonUnitLogElements() {
+    $testId = 1;
+    $unitName = 'UNIT_1';
+    $logKey = 'UNIT_LOG_KEY_REJECTED';
+    $testLog = new TestLog($testId, $logKey, 1623456789, '');
+
+    try {
+      $this->dbc->addUnitLogs([new UnitLog($testId, $unitName, $logKey, 1623456789, ''), $testLog]);
+      $this->fail('Expected InvalidArgumentException');
+    } catch (InvalidArgumentException) {
+    }
+
+    $writtenLogs = $this->dbc->_(
+      'select logentry from unit_logs where unit_name = :unitName and test_id = :testId and logentry = :logkey',
+      [':unitName' => $unitName, ':testId' => $testId, ':logkey' => $logKey],
+      true
+    );
+    $this->assertEmpty($writtenLogs);
   }
 
 }

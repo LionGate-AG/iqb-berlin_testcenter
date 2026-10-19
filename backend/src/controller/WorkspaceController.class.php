@@ -17,7 +17,7 @@ class WorkspaceController extends Controller {
   public static function get(Request $request, Response $response): Response {
     $workspaceId = (int) $request->getAttribute('ws_id');
 
-    /* @var $authToken AuthToken */
+    /** @var AuthToken $authToken */
     $authToken = $request->getAttribute('AuthToken');
 
     return $response->withJson([
@@ -302,8 +302,9 @@ class WorkspaceController extends Controller {
   public static function getReport(Request $request, Response $response): ?Response {
     $workspaceId = (int) $request->getAttribute('ws_id');
 
+    // null: no filter, the report covers all groups / sys-checks of the workspace
     $dataIds = $request->getParam('dataIds', '') === ''
-      ? []
+      ? null
       : explode(',', $request->getParam('dataIds', ''));
 
     try {
@@ -350,7 +351,7 @@ class WorkspaceController extends Controller {
     $sysCheckName = $request->getAttribute('sys-check_name');
 
     $workspaceController = new Workspace($workspaceId);
-    /* @var XMLFileSysCheck $xmlFile */
+    /** @var XMLFileSysCheck $xmlFile */
     $xmlFile = $workspaceController->getFileById('SysCheck', $sysCheckName);
 
     return $response->withJson([
@@ -373,7 +374,7 @@ class WorkspaceController extends Controller {
 
     $workspace = new Workspace($workspaceId);
 
-    /* @var XMLFileSysCheck $sysCheck */
+    /** @var XMLFileSysCheck $sysCheck */
     $sysCheck = $workspace->getFileById('SysCheck', $sysCheckName);
 
     $res = [
@@ -386,12 +387,12 @@ class WorkspaceController extends Controller {
       return $response->withJson($res);
     }
 
+    /** @var XMLFileUnit $unit */
     $unit = $workspace->getFileById('Unit', $sysCheck->getUnitId());
-    /* @var XMLFileUnit $unit */
     $unitRelations = $workspace->getFileRelations($unit);
 
+    /** @var FileRelation $unitRelation */
     foreach ($unitRelations as $unitRelation) {
-      /* @var FileRelation $unitRelation */
 
       switch ($unitRelation->getRelationshipType()) {
         case FileRelationshipType::isDefinedBy:
@@ -427,7 +428,7 @@ class WorkspaceController extends Controller {
     $bodyContents = JSON::decode($request->getBody()->getContents());
 
     $sysChecksFolder = new SysChecksFolder($workspaceId);
-    /* @var XMLFileSysCheck $sysCheck */
+    /** @var XMLFileSysCheck $sysCheck */
     $sysCheck = $sysChecksFolder->getFileById('SysCheck', $sysCheckName);
 
     if ($authToken) {

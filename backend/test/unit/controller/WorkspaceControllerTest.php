@@ -35,8 +35,6 @@ final class WorkspaceControllerTest extends TestCase {
 
   private array $callable;
   private array $reportMock;
-  private AdminDAO|MockInterface $adminDaoMock;
-  private SysChecksFolder|MockInterface $sysChecksFolderMock;
   private Workspace|MockInterface $workspaceMock;
   private WorkspaceDAO|MockInterface $workspaceDaoMock;
   private UploadedFilesHandler|MockInterface $uploadedFilesHandler;
@@ -62,8 +60,6 @@ final class WorkspaceControllerTest extends TestCase {
       ReportType::REVIEW->value => Mockery::mock('overload:' . ReviewReportOutput::class),
       ReportType::SYSCHECK->value => Mockery::mock('overload:' . SysCheckReportOutput::class)
     ];
-    $this->adminDaoMock = Mockery::mock('overload:' . AdminDAO::class);
-    $this->sysChecksFolderMock = Mockery::mock('overload:' . SysChecksFolder::class);
     $this->workspaceMock = Mockery::mock('overload:' . Workspace::class);
     $this->workspaceDaoMock = Mockery::mock( 'overload:' . WorkspaceDAO::class);
 
@@ -194,6 +190,34 @@ final class WorkspaceControllerTest extends TestCase {
 
   function test_GetReportWithSystemCheckAndJSONAndEmptyDataIds(): void {
     $this->testGetReportWithEmptyDataIds(ReportType::SYSCHECK->value, 'application/json');
+  }
+
+  function test_GetReport_WithoutDataIdsCreatesUnfilteredReport(): void {
+    $this->testGetReportPassesDataIdsToFactory('', null);
+  }
+
+  function test_GetReport_WithDataIdsCreatesFilteredReport(): void {
+    $this->testGetReportPassesDataIdsToFactory('id1,id2', ['id1', 'id2']);
+  }
+
+  private function testGetReportPassesDataIdsToFactory(string $dataIdsParam, ?array $expectedDataIds): void {
+    // Arrange
+    $this->dataIds = $dataIdsParam;
+    $reportType = ReportType::LOG->value;
+    $path = "/$this->workspaceId/report/$reportType";
+
+    // overload-mocked instances take over the expectations set before they are created
+    $this->reportMock[$reportType]->expects('generate')->andReturn(false);
+    Mockery::mock('alias:' . ReportOutputFactory::class)
+      ->expects('createReportOutput')
+      ->with($this->workspaceId, $expectedDataIds, ReportType::LOG, ReportFormat::JSON)
+      ->andReturn(new LogReportOutput($this->workspaceId, $expectedDataIds, ReportFormat::JSON));
+
+    // Act
+    $response = $this->callSlimFramework($path, 'application/json', $reportType);
+
+    // Assert
+    parent::assertSame(200, $response->getStatusCode());
   }
 
   function test_GetReportWithLogAndCSVAndNoneReportGeneration(): void {

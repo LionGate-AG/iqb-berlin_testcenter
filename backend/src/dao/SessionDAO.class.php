@@ -701,6 +701,7 @@ class SessionDAO extends DAO {
     );
   }
 
+  /** @return LoginSession[] */
   public function getDependantSessions(LoginSession $login): array {
     return match ($login->getLogin()->getMode()) {
       'monitor-group' => $this->getLoginSessions([

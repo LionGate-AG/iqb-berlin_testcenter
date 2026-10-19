@@ -2,7 +2,6 @@
 /** @noinspection PhpUnhandledExceptionInspection */
 declare(strict_types=1);
 
-use Mockery\MockInterface;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -30,5 +29,13 @@ class SysChecksFolderTest extends TestCase {
     $result = $this->folder->findAvailableSysChecks();
     $this->assertCount(1, $result);
     $this->assertEquals('SYSCHECK.SAMPLE', $result[0]->getId());
+  }
+
+  function test_collectSysCheckReports() {
+    $this->assertCount(1, $this->folder->collectSysCheckReports());
+    $this->assertCount(1, $this->folder->collectSysCheckReports(null));
+    $this->assertCount(1, $this->folder->collectSysCheckReports(['SYSCHECK.SAMPLE']));
+    $this->assertCount(0, $this->folder->collectSysCheckReports(['SYSCHECK.OTHER']));
+    $this->assertCount(0, $this->folder->collectSysCheckReports([]));
   }
 }

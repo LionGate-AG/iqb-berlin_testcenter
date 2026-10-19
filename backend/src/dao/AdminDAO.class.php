@@ -3,7 +3,6 @@
 /** @noinspection PhpUnhandledExceptionInspection */
 declare(strict_types=1);
 
-use Slim\Exception\HttpBadRequestException;
 
 class AdminDAO extends DAO {
   /**
@@ -577,9 +576,31 @@ class AdminDAO extends DAO {
     return $state ?? [];
   }
 
-  public function getResponseReportData($workspaceId, $groups): ?array {
-    $groupsPlaceholders = implode(',', array_fill(0, count($groups), '?'));
-    $bindParams = array_merge([$workspaceId], $groups);
+  /**
+   * Builds a condition on login_sessions.group_name to be appended to a where clause.
+   *
+   * @param string[]|null $groups null = no group filter
+   * @return array{0: string, 1: string[]} SQL starting with `and` (empty without filter) and its replacements
+   */
+  private static function buildGroupFilterClause(?array $groups): array {
+    if ($groups === null) {
+      return ['', []];
+    }
+
+    if (!count($groups)) {
+      return ['and 1 = 0', []];
+    }
+
+    $placeholders = implode(',', array_fill(0, count($groups), '?'));
+    return ["and login_sessions.group_name in ($placeholders)", $groups];
+  }
+
+  /**
+   * @param string[]|null $groups null = no group filter
+   */
+  public function getResponseReportData(int $workspaceId, ?array $groups): ?array {
+    [$groupFilter, $groupFilterParams] = self::buildGroupFilterClause($groups);
+    $bindParams = array_merge([$workspaceId], $groupFilterParams);
 
     // TODO: use data class
     $data = $this->_(<<<EOT
@@ -599,7 +620,7 @@ class AdminDAO extends DAO {
           inner join units on tests.id = units.test_id
       where
         login_sessions.workspace_id = ?
-          and login_sessions.group_name in ($groupsPlaceholders)
+          $groupFilter
       order by
         login_sessions.group_name,
         login_sessions.name,
@@ -645,9 +666,12 @@ class AdminDAO extends DAO {
     return $data;
   }
 
-  public function getLogReportData($workspaceId, $groups): ?array {
-    $groupsPlaceholders = implode(',', array_fill(0, count($groups), '?'));
-    $bindParams = array_merge([$workspaceId], $groups, [$workspaceId], $groups);
+  /**
+   * @param string[]|null $groups null = no group filter
+   */
+  public function getLogReportData(int $workspaceId, ?array $groups): ?array {
+    [$groupFilter, $groupFilterParams] = self::buildGroupFilterClause($groups);
+    $bindParams = array_merge([$workspaceId], $groupFilterParams, [$workspaceId], $groupFilterParams);
 
 
 
@@ -670,12 +694,12 @@ class AdminDAO extends DAO {
             unit_logs
 			  WHERE
             login_sessions.workspace_id = ? AND
-            login_sessions.group_name IN ($groupsPlaceholders) AND
             login_sessions.id = person_sessions.login_sessions_id AND
             person_sessions.id = tests.person_id AND
             tests.id = units.test_id AND
-            units.test_id = unit_logs.test_id and 
+            units.test_id = unit_logs.test_id and
             units.name = unit_logs.unit_name
+            $groupFilter
         
         UNION ALL
         
@@ -695,19 +719,22 @@ class AdminDAO extends DAO {
             test_logs
         WHERE
             login_sessions.workspace_id = ? AND
-            login_sessions.group_name IN ($groupsPlaceholders) AND
             login_sessions.id = person_sessions.login_sessions_id AND
             person_sessions.id = tests.person_id AND
             tests.id = test_logs.booklet_id
+            $groupFilter
 			",
       $bindParams,
       true
     );
   }
 
-  public function getReviewReportData($workspaceId, $groups): ?array {
-    $groupsPlaceholders = implode(',', array_fill(0, count($groups), '?'));
-    $bindParams = array_merge([$workspaceId], $groups, [$workspaceId], $groups);
+  /**
+   * @param string[]|null $groups null = no group filter
+   */
+  public function getReviewReportData(int $workspaceId, ?array $groups): ?array {
+    [$groupFilter, $groupFilterParams] = self::buildGroupFilterClause($groups);
+    $bindParams = array_merge([$workspaceId], $groupFilterParams, [$workspaceId], $groupFilterParams);
 
     // TODO: use data class
     $reviews = $this->_(
@@ -734,9 +761,9 @@ class AdminDAO extends DAO {
         left join person_sessions on person_sessions.id = tests.person_id
         left join login_sessions on login_sessions.id = person_sessions.login_sessions_id
 			where
-        login_sessions.workspace_id = ? and
-        login_sessions.group_name IN ($groupsPlaceholders)
-			
+        login_sessions.workspace_id = ?
+        $groupFilter
+
 			union all
         
       select
@@ -760,8 +787,8 @@ class AdminDAO extends DAO {
         left join person_sessions on tests.person_id = person_sessions.id
         left join login_sessions on person_sessions.login_sessions_id = login_sessions.id
 			where
-        login_sessions.workspace_id = ? and
-        login_sessions.group_name IN ($groupsPlaceholders)
+        login_sessions.workspace_id = ?
+        $groupFilter
 			",
       $bindParams,
       true
