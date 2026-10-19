@@ -18,7 +18,7 @@ spec:
     spec:
       {{- if .Values.deployment.pgbouncer.topologySpreadConstraints }}
       topologySpreadConstraints:
-        {{- .Values.deployment.pgbouncer.topologySpreadConstraints | toYaml | nindent 8 }}
+        {{- tpl (.Values.deployment.pgbouncer.topologySpreadConstraints | toYaml) . | nindent 8 }}
       {{- end }}
       securityContext:
         runAsNonRoot: true

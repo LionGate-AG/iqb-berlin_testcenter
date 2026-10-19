@@ -221,6 +221,10 @@ config:
     # Common values: 1gb (small), 2gb (medium), 4gb+ (large deployments)
     # Monitor Redis memory usage and adjust accordingly.
     redisMemoryMax: 1gb
+    # -- Maximum number of client connections (Redis's own default when empty: 10000)
+    # Every backend worker process keeps one connection open, so this needs to exceed backend replicas (at their
+    # maximum) x pm.max_children (300) plus the drainers. When the limit is reached, Redis refuses new connections.
+    maxClients: ""
 
 # =============================================================================
 # OBJECT STORAGE (S3-compatible: SeaweedFS / AWS S3 / STACKIT)
@@ -339,6 +343,10 @@ ingress:
   # When using Traefik, specify the certificate resolver name
   # Leave empty to use manually configured certificates
   tlsCertResolver: ""
+  # -- Route /api from Traefik directly to the backend instead of through the frontend's nginx
+  # Saves one proxy hop per API request, and the API no longer depends on the frontend pods. Request size and
+  # timeouts are then those of the Traefik entry point, not of the frontend's nginx (2 GB, 600 s).
+  apiDirectToBackend: false
 
 # =============================================================================
 # DEPLOYMENT CONFIGURATION
@@ -446,15 +454,16 @@ deployment:
         # -- Number of failures before pod is considered failed to start
         failureThreshold: 60 # 5 minutes overall
     # -- Topology spread constraints for backend deployment
-    # Uncomment to distribute backend pods across different nodes for high availability
-    # For production: Enable to ensure pods are not scheduled on the same node
+    # Uncomment to distribute backend pods across different nodes. Rendered with `tpl`, so values may contain
+    # `{{ .Release.Name }}`. With many replicas, prefer the soft variant (whenUnsatisfiable: ScheduleAnyway, see
+    # values-large.yaml): a hard one stalls rolling updates once every node already has its share.
     topologySpreadConstraints:
     #   - maxSkew: 1
     #     topologyKey: kubernetes.io/hostname
     #     whenUnsatisfiable: DoNotSchedule
     #     labelSelector:
     #       matchLabels:
-    #         app: release-name-backend-pod
+    #         app: "{{ .Release.Name }}-backend-pod"
 
   # -- Drainer of the test-log queue (see config.backend.asyncTestLogs)
   # Runs the backend image with `php backend/drain-logs.php`, always exactly one replica. It is deployed whenever
@@ -680,6 +689,13 @@ deployment:
       maxReplicas: 5
       # -- Target average CPU utilization (%) across broadcaster pods
       targetCPUUtilizationPercentage: 70
+      # -- Scale-up rate: up to +percent or +pods (whichever is more) per periodSeconds. Without it, the
+      # Kubernetes defaults apply (+100% or +4 pods per 15 s).
+      # scaleUp:
+      #   stabilizationWindowSeconds: 0
+      #   percent: 100
+      #   pods: 4
+      #   periodSeconds: 15
     # -- Resource allocation for Broadcaster pods
     # Broadcaster needs moderate resources for WebSocket connections
     resources:
@@ -723,7 +739,8 @@ deployment:
         # -- Number of failures before pod is marked as not ready
         failureThreshold: 3
     # -- Topology spread constraints for Broadcaster deployment
-    # Uncomment to distribute broadcaster pods across different nodes
+    # Uncomment to distribute broadcaster pods across different nodes. Rendered with `tpl`, so values may contain
+    # `{{ .Release.Name }}`.
     # For production: Enable for better availability of real-time features
     topologySpreadConstraints:
     #   - maxSkew: 1
@@ -731,7 +748,7 @@ deployment:
     #     whenUnsatisfiable: DoNotSchedule
     #     labelSelector:
     #       matchLabels:
-    #         app: release-name-broadcaster-pod
+    #         app: "{{ .Release.Name }}-broadcaster-pod"
 
   # -- Broadcaster Redis deployment configuration (Redis 8.0)
   # Holds registrations, testees, monitors and test sessions of all broadcaster pods; no eviction.
@@ -880,6 +897,20 @@ deployment:
   # For production: Configure backup strategies, replication, and monitoring.
   # ⚠️  WARNING: Database is stateful - ensure proper backup and recovery procedures!
   db:
+    # -- PostgreSQL server settings, each passed as `-c name=value`
+    # Keep max_connections above everything that connects: PgBouncer replicas x config.pgbouncer.maxDbConnections,
+    # or backend replicas x PHP-FPM workers without PgBouncer, plus the drainers, the seed Job and maintenance.
+    # Memory settings (shared_buffers, effective_cache_size, ...) belong together with resources.limits.memory.
+    settings:
+      max_connections: 500
+    # -- Size of a memory-backed /dev/shm (e.g. 1Gi). Empty: the container runtime's 64 MB.
+    # Parallel queries allocate dynamic shared memory there and fail with "could not resize shared memory segment"
+    # when it is too small. Counts against the memory limit.
+    sharedMemorySize: ""
+    # -- Node selector for the database pod, e.g. to run it on a dedicated node pool
+    nodeSelector: {}
+    # -- Tolerations for the database pod, e.g. for the taint of a dedicated node pool
+    tolerations: []
     # -- Resource allocation for database pods
     # Database resource requirements depend on data size and query complexity
     resources:
@@ -1139,3 +1170,30 @@ prometheusAdapter:
     limits:
       cpu: 250m
       memory: 256Mi
+
+# =============================================================================
+# OVERPROVISIONING (optional, off by default)
+# =============================================================================
+# -- Overprovisioning buffer (off by default): placeholder pods with a negative priority that hold free node
+# capacity. A pod that needs room preempts them at once instead of waiting the minutes a new node needs; the
+# preempted placeholders become Pending and make the cluster autoscaler add a node in the background. Only useful
+# with a cluster autoscaler. Every placeholder reserves (and costs) the capacity of its requests.
+overprovisioning:
+  enabled: false
+  # -- Number of placeholder pods. Each absorbs one burst until its replacement node has joined.
+  replicas: 1
+  image:
+    repository: registry.k8s.io/pause
+    tag: "3.10"
+    pullPolicy: IfNotPresent
+  # -- Priority of the placeholders; must be below that of every other workload (default 0).
+  priorityValue: -1
+  # -- Size a placeholder close to the free capacity of an empty node, so that it does not fit into gaps on busy
+  # nodes and really keeps a whole node free.
+  resources:
+    requests:
+      cpu: 1000m
+      memory: 1Gi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
