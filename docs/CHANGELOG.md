@@ -9,6 +9,7 @@
 - `make testcenter-update` endet, wenn man nach einem fehlgeschlagenen Daten-Backup oder nach übersprungenen Migrationsskripten das Fortfahren ablehnt. Bisher meldete das Skript zwar „update script finished“, spielte die neue Version aber trotzdem ein.
 - API: Berichte (`GET /workspace/{ws_id}/report/{type}`) ohne den optionalen Parameter `dataIds` umfassen alle Gruppen bzw. alle System-Checks des Arbeitsbereichs. Bisher brachen Log-, Antwort- und Review-Berichte mit einem SQL-Fehler ab, und der System-Check-Bericht war leer. (#1614)
 - Das Löschen von Dateien in Arbeitsbereichen mit vielen Logins bricht nicht mehr nach 30 Sekunden mit Fehler 500 ab. Beim Löschen werden alle verbleibenden Testtaker-Dateien erneut geprüft, was bei rund 25.000 Logins pro Datei etwa eine Minute dauert; das Löschen erhält dafür wie das Hochladen bis zu 600 Sekunden.
+- Hochladen, Ersetzen und Löschen von Testtakers-Dateien in Arbeitsbereichen mit sehr vielen Logins bricht nicht mehr nach 30 Sekunden ab: Die Prüfung aller Testtakers-Dateien eines Arbeitsbereichs las die `CustomTexts` einer Datei für jedes Login neu ein und verglich die Login-Namen paarweise. Bei einer Datei mit 100.000 Logins sinkt die Prüfung dadurch von über fünf Minuten auf wenige Sekunden. Login-Namen, die nur als Zahl gleich sind (z. B. `01` und `1`), werden dabei nicht mehr als derselbe Name behandelt.
 
 ## Technisches
 - Der Brute-Force-Schutz (`BRUTE_FORCE_PROTECTION` in `.env.prod-template`) ist bei Neuinstallationen via docker-compose ausgeschaltet.

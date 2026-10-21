@@ -658,6 +658,50 @@ END;
     $this->assertEquals($expected, $result);
   }
 
+  function test_getAllLoginNames_keepsOrderAndStringsAndComparesExactly() {
+    $xml = <<<END
+<Testtakers xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                  xsi:noNamespaceSchemaLocation="https://w3id.org/iqb/spec/testcenter-testtaker-xml/18.0">
+  <Metadata>
+    <Description>example</Description>
+  </Metadata>
+  <Group id="first_group" label="1st">
+    <Login mode="run-hot-return" name="zeta" pw="pw" />
+    <Login mode="run-hot-return" name="1" pw="pw" />
+  </Group>
+  <Group id="second_group" label="2nd">
+    <Login mode="run-hot-return" name="01" pw="pw" />
+    <Login mode="run-hot-return" name="1e3" pw="pw" />
+    <Login mode="run-hot-return" name="1000" pw="pw" />
+    <Login mode="run-hot-return" name="alpha" pw="pw" />
+  </Group>
+</Testtakers>
+END;
+    $xmlFile = XMLFileTesttakers::fromString($xml, false);
+
+    // in document order, as strings, and "01" / "1e3" are not taken for "1" / "1000"
+    $this->assertSame(['zeta', '1', '01', '1e3', '1000', 'alpha'], $xmlFile->getAllLoginNames());
+  }
+
+  function test_getAllLoginNames_isLinear() {
+    $logins = '';
+    for ($i = 0; $i < 50000; $i++) {
+      $logins .= "<Login mode=\"run-hot-return\" name=\"login$i\" pw=\"pw\" />";
+    }
+    $xml = '<Testtakers xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
+      . 'xsi:noNamespaceSchemaLocation="https://w3id.org/iqb/spec/testcenter-testtaker-xml/18.0">'
+      . "<Metadata><Description>example</Description></Metadata><Group id=\"g\" label=\"g\">$logins</Group></Testtakers>";
+    $xmlFile = XMLFileTesttakers::fromString($xml, false);
+
+    $start = microtime(true);
+    $names = $xmlFile->getAllLoginNames();
+    $seconds = microtime(true) - $start;
+
+    $this->assertCount(50000, $names);
+    // the quadratic version needed far more than this for 50,000 names
+    $this->assertLessThan(5, $seconds, "getAllLoginNames() took $seconds s for 50,000 logins");
+  }
+
   function test_getCustomTexts() {
     $xmlFile = XMLFileTesttakers::fromString($this->exampleXML1, false);
 

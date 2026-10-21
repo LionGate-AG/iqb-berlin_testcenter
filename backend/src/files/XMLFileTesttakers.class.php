@@ -8,6 +8,8 @@ class XMLFileTesttakers extends XMLFile {
   const bool canBeRelationSubject = true;
   const bool canBeRelationObject = false;
   protected LoginArray $logins;
+  // The <CustomTexts> of the file, the same for every login; read once (see getLogin()).
+  private ?stdClass $customTextsOfFile = null;
 
   public function crossValidate(WorkspaceCache $workspaceCache): void {
     parent::crossValidate($workspaceCache);
@@ -127,15 +129,16 @@ class XMLFileTesttakers extends XMLFile {
       return [];
     }
 
+    // Names as keys: in_array() against the growing list made this quadratic, which made uploads into workspaces
+    // with tens of thousands of logins run into the time limit. Keys also compare exactly, where in_array() compared
+    // loosely ("01" == "1").
     $loginNames = [];
-
     foreach ($this->getXml()->xpath('Group/Login[@name]') as $loginElement) {
-      if (!in_array((string) $loginElement['name'], $loginNames)) {
-        $loginNames[] = (string) $loginElement['name'];
-      }
+      $loginNames[(string) $loginElement['name']] = true;
     }
 
-    return $loginNames;
+    // PHP turns numeric-string keys into integers
+    return array_map('strval', array_keys($loginNames));
   }
 
   public function getGroups(): array {
@@ -276,7 +279,9 @@ class XMLFileTesttakers extends XMLFile {
       isset($groupElement['validTo']) ? TimeStamp::fromXMLFormat((string) $groupElement['validTo']) : 0,
       TimeStamp::fromXMLFormat((string) $groupElement['validFrom']),
       (int) ($groupElement['validFor'] ?? 0),
-      $this->getCustomTexts(),
+      // Read once per file instead of once per login: each call is an XPath query over the whole document, which
+      // made getAllLogins() take minutes for a file with 100,000 logins. Cloned, so every Login keeps its own copy.
+      clone ($this->customTextsOfFile ??= $this->getCustomTexts()),
       $monitorProfiles,
       $viewSettings
     );
