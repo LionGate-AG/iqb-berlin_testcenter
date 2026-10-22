@@ -12,6 +12,7 @@
 - Objektspeicher (`STORAGE_DRIVER=s3`): Fehlen `S3_REGION` oder `S3_PRESIGN_TTL` oder sind sie leer, gelten ihre Standardwerte `us-east-1` bzw. `3600`. Bisher wurden die Standardwerte nie angewendet: Ohne `S3_PRESIGN_TTL` startete das Backend nicht, ohne `S3_REGION` lief es mit leerer Region. Ein `S3_PRESIGN_TTL`, das keine nicht-negative ganze Zahl ist, beendet den Start mit einer Fehlermeldung.
 - Objektspeicher (`STORAGE_DRIVER=s3`): Der Download von Arbeitsbereichsdateien und die Weiterleitung auf Testdateien tragen wie alle anderen Dateiantworten `Cache-Control: private`, sodass gemeinsam genutzte Caches (z. B. ein CDN) sie nicht ohne erneute Token-Prüfung weitergeben.
 - Objektspeicher (`STORAGE_DRIVER=s3`): Downloads aus dem Objektspeicher kommen unkomprimiert. Bisher komprimierten manche Objektspeicher (z. B. der von STACKIT) jede Datei beim Download, sobald der Browser gzip akzeptierte. Die Antwort kam dann ohne Längenangabe und unvorhersehbar langsam: Ein Download von 43,8 MB dauerte über 20 Minuten statt weniger Sekunden.
+- Objektspeicher (`STORAGE_DRIVER=s3`): Anhänge von Units werden mit ihrem Dateityp (`Content-Type`) ausgeliefert. Bisher war der Typ leer.
 - Helm: Ist der File-Server abgeschaltet (`config.backend.fileServerEnabled: false`, z. B. mit Objektspeicher), startet das Frontend. Bisher brach nginx den Start ab, weil es den Namen `file-server` des `/fs/`-Proxys nicht auflösen konnte.
 
 ## Technisches
