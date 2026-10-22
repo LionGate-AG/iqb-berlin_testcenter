@@ -552,12 +552,12 @@ class AdminDAO extends DAO {
         ];
         $result[$fileId]['playerPath'] = "ws_{$workspaceId}/{$row['objectName']}";
       } elseif ($row['relationshipType'] === 'isDefinedBy' || $row['relationshipType'] === 'usesScheme') {
-        $filePath = DATA_DIR . "/ws_{$workspaceId}/{$row['objectType']}/{$row['objectName']}";
-        $content = @file_get_contents($filePath);
-        if ($content === false) {
-          error_log("getBookletFiles: failed to read file at {$filePath}");
+        $logicalPath = "ws_{$workspaceId}/{$row['objectType']}/{$row['objectName']}";
+        $content = self::readWorkspaceFile($logicalPath);
+        if ($content === null) {
+          error_log("getBookletFiles: failed to read file at {$logicalPath}");
         }
-        $decoded = $content !== false ? json_decode($content, true) : null;
+        $decoded = $content !== null ? json_decode($content, true) : null;
         $key = $row['relationshipType'] === 'isDefinedBy' ? 'unitDefinition' : 'codingScheme';
         $result[$fileId][$key] = $decoded;
       }
@@ -565,15 +565,19 @@ class AdminDAO extends DAO {
 
     foreach ($result as $fileId => &$unit) {
       $unitName = preg_replace('/\.xml$/i', '', $unit['name']);
-      $vomdPath = DATA_DIR . "/ws_{$workspaceId}/Resource/{$unitName}.vomd";
-      $vomdContent = @file_get_contents($vomdPath);
-      if ($vomdContent !== false) {
+      $vomdContent = self::readWorkspaceFile("ws_{$workspaceId}/Resource/{$unitName}.vomd");
+      if ($vomdContent !== null) {
         $unit['metaData'] = json_decode($vomdContent, true);
       }
     }
     unset($unit);
 
     return $result;
+  }
+
+  /** Contents of a workspace file from the active storage (disk or object store), null if it does not exist. */
+  private static function readWorkspaceFile(string $logicalPath): ?string {
+    return Storage::driver()->exists($logicalPath) ? Storage::driver()->get($logicalPath) : null;
   }
 
   /**

@@ -57,7 +57,8 @@ class FilesystemDriver implements StorageDriver {
   }
 
   public function exists(string $logicalPath): bool {
-    return file_exists($this->abs($logicalPath));
+    // a file, not a directory: like an object in the object store
+    return is_file($this->abs($logicalPath));
   }
 
   public function delete(string $logicalPath): void {

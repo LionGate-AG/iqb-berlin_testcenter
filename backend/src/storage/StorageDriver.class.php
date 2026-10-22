@@ -25,6 +25,7 @@ interface StorageDriver {
   /** Open a readable stream/handle for the logical path (for download passthrough). */
   public function getStream(string $logicalPath);
 
+  /** Whether a file (not a directory) exists at the logical path. */
   public function exists(string $logicalPath): bool;
 
   public function delete(string $logicalPath): void;

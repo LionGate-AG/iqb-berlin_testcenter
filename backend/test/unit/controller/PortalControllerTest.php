@@ -196,4 +196,61 @@ final class PortalControllerTest extends TestCase {
       }
     }
   }
+
+  private static function useObjectStore(): StorageDriverFake {
+    require_once "test/unit/mock-classes/StorageDriverFake.php";
+    $storage = new StorageDriverFake([
+      'ws_1/Resource/verona-player-simple-6.0.html' => '<html>player</html>',
+      'ws_1/Resource/GeoGebra/js/deployggb.js' => 'ggb();',
+    ]);
+    SystemConfig::$storage_driver = 's3';
+    Storage::setDriver($storage);
+    return $storage;
+  }
+
+  function test_getPlayerResource_objectStore_streamsAPlayerOfTheWorkspace(): void {
+    self::useObjectStore();
+    $this->portalDaoMock->expects('isPlayer')->with(1, 'verona-player-simple-6.0.html')->andReturn(true)->once();
+
+    $response = self::getPlayerResource(1, 'verona-player-simple-6.0.html');
+
+    $this->assertEquals(200, $response->getStatusCode());
+    $this->assertEquals('<html>player</html>', self::body($response));
+    $this->assertEquals('text/html', $response->getHeaderLine('Content-Type'));
+    $this->assertEquals('19', $response->getHeaderLine('Content-Length'));
+    $this->assertEquals('private, max-age=3600', $response->getHeaderLine('Cache-Control'));
+  }
+
+  function test_getPlayerResource_objectStore_streamsGeoGebraFiles(): void {
+    self::useObjectStore();
+    $this->portalDaoMock->shouldNotReceive('isPlayer');
+
+    $response = self::getPlayerResource(1, 'GeoGebra/js/deployggb.js');
+
+    $this->assertEquals('ggb();', self::body($response));
+    $this->assertEquals('text/javascript', $response->getHeaderLine('Content-Type'));
+  }
+
+  function test_getPlayerResource_objectStore_404WhenThePlayerObjectIsMissing(): void {
+    self::useObjectStore();
+    $this->portalDaoMock->expects('isPlayer')->with(1, 'missing-player.html')->andReturn(true)->once();
+
+    $this->expectException(HttpNotFoundException::class);
+    self::getPlayerResource(1, 'missing-player.html');
+  }
+
+  function test_getPlayerResource_objectStore_rejectedPathsDoNotReachTheStore(): void {
+    $storage = self::useObjectStore();
+    $this->portalDaoMock->shouldNotReceive('isPlayer');
+
+    foreach (['../secret.txt', 'GeoGebra/../verona-player-simple-6.0.html', 'GeoGebra//js/deployggb.js', 'sub/x.html'] as $path) {
+      try {
+        self::getPlayerResource(1, $path);
+        $this->fail("`$path` must be rejected");
+      } catch (HttpNotFoundException) {
+        $this->addToAssertionCount(1);
+      }
+    }
+    $this->assertSame([], $storage->calls);
+  }
 }

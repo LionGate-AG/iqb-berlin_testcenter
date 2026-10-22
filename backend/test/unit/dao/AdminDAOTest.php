@@ -524,4 +524,52 @@ final class AdminDAOTest extends TestCase {
   private function countTableRows(string $tableName): int {
     return (int) $this->dbc->_("select count(*) as c from $tableName")["c"];
   }
+
+  public function test_getBookletFiles_readsUnitFilesFromTheActiveStorage(): void {
+    require_once "test/unit/mock-classes/StorageDriverFake.php";
+    $storage = new StorageDriverFake([
+      'ws_1/Resource/unit-a.voud' => '{"def":"a"}',
+      'ws_1/Resource/unit-a.vocs' => '{"scheme":"a"}',
+      'ws_1/Resource/Unit-a.vomd' => '{"meta":"a"}',
+    ]);
+    SystemConfig::$storage_driver = 's3';
+    Storage::setDriver($storage);
+    $this->dbc->_(
+      "insert into files(workspace_id, name, id, label, type, modification_ts, is_valid, size) values
+        (1, 'Unit-a.xml', 'UNIT.A', 'Unit A', 'Unit', '2023-01-16 09:00:00+01:00', true, 1),
+        (1, 'Unit-b.xml', 'UNIT.B', 'Unit B', 'Unit', '2023-01-16 09:00:00+01:00', true, 1)"
+    );
+    $this->dbc->_(
+      "insert into file_relations(workspace_id, subject_name, subject_type, relationship_type, object_type, object_name) values
+        (1, 'Booklet.xml', 'Booklet', 'containsUnit', 'Unit', 'Unit-a.xml'),
+        (1, 'Booklet.xml', 'Booklet', 'containsUnit', 'Unit', 'Unit-b.xml'),
+        (1, 'Unit-a.xml', 'Unit', 'usesPlayer', 'Resource', 'verona-player-simple-6.0.html'),
+        (1, 'Unit-a.xml', 'Unit', 'isDefinedBy', 'Resource', 'unit-a.voud'),
+        (1, 'Unit-a.xml', 'Unit', 'usesScheme', 'Resource', 'unit-a.vocs'),
+        (1, 'Unit-b.xml', 'Unit', 'isDefinedBy', 'Resource', 'unit-b.voud')"
+    );
+
+    ini_set('error_log', '/dev/null'); // the missing unit-b.voud is logged; PHPUnit would take that output as an error
+
+    $result = $this->dbc->getBookletFiles(1, ['BOOKLET.SAMPLE-1']);
+
+    $this->assertEquals(
+      [
+        'name' => 'Unit-a.xml',
+        'label' => 'Unit A',
+        'workspaceId' => 1,
+        'playerVersion' => ['major' => 4, 'minor' => 0, 'patch' => 0],
+        'playerPath' => 'ws_1/verona-player-simple-6.0.html',
+        'unitDefinition' => ['def' => 'a'],
+        'codingScheme' => ['scheme' => 'a'],
+        'metaData' => ['meta' => 'a'],
+      ],
+      $result['UNIT.A']
+    );
+    // a missing definition stays null, as before; no metadata file, no key
+    $this->assertEquals(
+      ['name' => 'Unit-b.xml', 'label' => 'Unit B', 'workspaceId' => 1, 'unitDefinition' => null],
+      $result['UNIT.B']
+    );
+  }
 }
