@@ -24,5 +24,11 @@ class FileExtTest extends TestCase {
     $this->assertFalse(FileExt::has('/xxx/yyy/aaa.bbb.ccc.ddd', 'aaa.bbb.ccc.ddd'));
   }
 
+  function test_getMimeType_byExtensionAlsoForFilesNotOnDisk() {
+    $this->assertEquals('application/pdf', FileExt::getMimeType('/not/on/disk/attachment.PDF'));
+    $this->assertEquals('image/png', FileExt::getMimeType('ws_1/UnitAttachments/scan.png'));
+    $this->assertEquals('application/octet-stream', FileExt::getMimeType('/not/on/disk/unknown.xyz'));
+  }
+
 }
 

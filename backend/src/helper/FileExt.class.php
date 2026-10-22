@@ -91,11 +91,8 @@ class FileExt {
     "7z" => "application/x-7z-compressed"
   ];
 
+  /** By file extension only, so it works for objects in the object store, too. */
   static function getMimeType($filePath): string {
-    if (!file_exists($filePath)) {
-      return "";
-    }
-
 //    echo "\n#############" . pathinfo($filePath, PATHINFO_EXTENSION) . '##########';
     return FileExt::knownTypes[strtolower(pathinfo($filePath, PATHINFO_EXTENSION))] ?? 'application/octet-stream';
   }
