@@ -44,5 +44,10 @@
   },
   "autoload-dev": {
     "classmap": ["test/unit/test-helper"]
+  },
+  "config": {
+    "platform": {
+      "php": "8.3.36"
+    }
   }
 }
