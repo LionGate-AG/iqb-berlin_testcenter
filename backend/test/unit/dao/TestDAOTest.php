@@ -3,29 +3,36 @@
 
 use PHPUnit\Framework\TestCase;
 
-class TestDAOExposed extends TestDAO {
-  public function getOrCreateUnitId(int $testId, string $unitName, string $originalUnitId = ''): string {
-    return parent::getOrCreateUnitId($testId, $unitName, $originalUnitId);
-  }
-}
+require_once "test/unit/test-helper/UsesTestStateCache.php";
 
 /**
  * @runTestsInSeparateProcesses
  * @preserveGlobalState disabled
  */
 class TestDAOTest extends TestCase {
-  private TestDAOExposed $dbc;
+  use UsesTestStateCache;
+
+  private TestDAO $dbc;
 
   function setUp(): void {
     require_once "test/unit/TestDB.class.php";
 
     TestDB::setUp();
-    $this->dbc = new TestDAOExposed();
+    $this->dbc = new TestDAO();
     $this->dbc->runFile(ROOT_DIR . '/backend/test/unit/testdata.sql');
   }
 
   function tearDown(): void {
     unset($this->dbc);
+  }
+
+  /** @return array<string, mixed> */
+  private function tableState(int $testId): array {
+    $row = $this->dbc->_('select laststate from tests where id = :id', [':id' => $testId]);
+    $laststate = $row['laststate'] ?? null;
+    /** @var array<string, mixed>|null $state */
+    $state = JSON::decode(is_string($laststate) ? $laststate : '{}', true);
+    return $state ?? [];
   }
 
   function test_getTestState() {
@@ -38,6 +45,21 @@ class TestDAOTest extends TestCase {
     $result = $this->dbc->getTestState(3);
 
     $this->assertEquals($expected, $result);
+  }
+
+  function test_getOrCreateTest() {
+    $created = $this->dbc->getOrCreateTest(2, new TestName('BOOKLET.SAMPLE-1'), 'new label');
+    $this->assertEquals('BOOKLET.SAMPLE-1', $created->name);
+    $this->assertEquals('new label', $created->label);
+    $this->assertFalse($created->locked);
+
+    $again = $this->dbc->getOrCreateTest(2, new TestName('BOOKLET.SAMPLE-1'), 'other label');
+    $this->assertEquals($created->id, $again->id);
+    $this->assertEquals('new label', $again->label);
+
+    $existing = $this->dbc->getOrCreateTest(1, new TestName('BOOKLET.SAMPLE-1'), 'other label');
+    $this->assertEquals(2, $existing->id);
+    $this->assertEquals('second test label', $existing->label);
   }
 
   function test_addTestLogs() {
@@ -86,6 +108,74 @@ class TestDAOTest extends TestCase {
 
     $this->assertNotEmpty($actualLogEmptyContent);
     $this->assertEquals($expectedLogEmptyContent, $actualLogEmptyContent);
+  }
+
+  function test_addTestLogs_rejectsNonTestLogElements() {
+    $testId = 1;
+    $logKey = 'LOG_KEY_REJECTED';
+    $unitLog = new UnitLog($testId, 'UNIT_1', $logKey, 1623456789, '');
+
+    try {
+      $this->dbc->addTestLogs([new TestLog($testId, $logKey, 1623456789, ''), $unitLog]);
+      $this->fail('Expected InvalidArgumentException');
+    } catch (InvalidArgumentException) {
+    }
+
+    $writtenLogs = $this->dbc->_(
+      'select logentry from test_logs where booklet_id = :id and logentry = :logentry',
+      [':id' => $testId, ':logentry' => $logKey],
+      true
+    );
+    $this->assertEmpty($writtenLogs);
+  }
+
+  function test_addTestLogs_async_queuesInsteadOfInserting(): void {
+    $redis = $this->enableAsyncTestLogs();
+
+    $this->dbc->addTestLogs([new TestLog(1, 'LOG_KEY_QUEUED', 1623456789, 'content')]);
+
+    $this->assertSame(['[1,"LOG_KEY_QUEUED",1623456789,"content"]'], $redis->lists['test-logs:queue']);
+    $this->assertSame(0, $this->countTestLogs('LOG_KEY_QUEUED'));
+  }
+
+  function test_addTestLogs_async_insertsWhenRedisFails(): void {
+    $redis = $this->enableAsyncTestLogs();
+    $redis->failing = true;
+
+    $this->dbc->addTestLogs([new TestLog(1, 'LOG_KEY_FALLBACK', 1623456789)]);
+
+    $this->assertSame(1, $this->countTestLogs('LOG_KEY_FALLBACK'));
+  }
+
+  function test_addTestLogs_async_insertsWhenRedisIsUnreachable(): void {
+    $this->enableAsyncTestLogs();
+    (new ReflectionProperty(CacheService::class, 'redis'))->setValue(null, null);
+    SystemConfig::$cacheServer_host = '127.0.0.1';
+    SystemConfig::$cacheServer_port = 1;
+
+    $this->dbc->addTestLogs([new TestLog(1, 'LOG_KEY_FALLBACK', 1623456789)]);
+
+    $this->assertSame(1, $this->countTestLogs('LOG_KEY_FALLBACK'));
+  }
+
+  function test_addTestLogs_async_insertsWhenQueueIsFull(): void {
+    $redis = $this->enableAsyncTestLogs();
+    $redis->lists['test-logs:queue'] = array_fill(0, LogBuffer::MAX_DEPTH, '[1,"key",1,""]');
+
+    $this->dbc->addTestLogs([new TestLog(1, 'LOG_KEY_FALLBACK', 1623456789)]);
+
+    $this->assertSame(1, $this->countTestLogs('LOG_KEY_FALLBACK'));
+    $this->assertCount(LogBuffer::MAX_DEPTH, $redis->lists['test-logs:queue']);
+  }
+
+  function test_addTestLogs_switchedOff_insertsWithoutTouchingRedis(): void {
+    $redis = $this->enableAsyncTestLogs();
+    SystemConfig::$testLogs_async = false;
+
+    $this->dbc->addTestLogs([new TestLog(1, 'LOG_KEY_DIRECT', 1623456789)]);
+
+    $this->assertSame(1, $this->countTestLogs('LOG_KEY_DIRECT'));
+    $this->assertSame(0, $redis->calls);
   }
 
   function test_getUnitState() {
@@ -153,6 +243,103 @@ class TestDAOTest extends TestCase {
 
     $resultFromGetAfterUpdate = $this->dbc->getTestState(1);
     $this->assertEquals($resultAfterUpdate, $resultFromGetAfterUpdate);
+  }
+
+  function test_updateTestState_withGivenRow() {
+    $patch = [['key' => 'some_entry', 'content' => 'some_content', 'timeStamp' => 1]];
+
+    // the given row is used as it is, the table's state (CURRENT_UNIT_ID) is not read again
+    $result = $this->dbc->updateTestState(1, $patch, ['laststate' => '{"FROM_ROW":"x"}', 'person_id' => 1]);
+
+    $expected = ['FROM_ROW' => 'x', 'some_entry' => 'some_content'];
+    $this->assertEquals($expected, $result);
+    $this->assertEquals($expected, $this->dbc->getTestState(1));
+  }
+
+  function test_updateTestState_buffered_leavesTheTableToTheDrainer(): void {
+    $redis = $this->enableTestStateCache(true);
+    $patch = [['key' => 'CURRENT_UNIT_ID', 'content' => 'UNIT_2', 'timeStamp' => 1]];
+
+    $result = $this->dbc->updateTestState(1, $patch);
+
+    $this->assertSame(['CURRENT_UNIT_ID' => 'UNIT_2'], $result);
+    $this->assertSame(['CURRENT_UNIT_ID' => 'UNIT_1'], $this->tableState(1));
+    $this->assertSame(1, TestStateBuffer::depth());
+    $this->assertNull($redis->ttl['test-state:1']);
+    // readers see the buffered state at once
+    $this->assertSame(['CURRENT_UNIT_ID' => 'UNIT_2'], $this->dbc->getTestState(1));
+    $this->assertEquals((object) ['CURRENT_UNIT_ID' => 'UNIT_2'], $this->dbc->getTestById(1)?->state);
+    $this->assertEquals((object) ['CURRENT_UNIT_ID' => 'UNIT_2'], $this->dbc->getTestByPerson(1, 'first sample test')?->state);
+    /** @var array{laststate: array<string, mixed>} $testSession */
+    $testSession = $this->dbc->getTestSession(1);
+    $this->assertSame('UNIT_2', $testSession['laststate']['CURRENT_UNIT_ID']);
+
+    // the next update merges into the buffered state, not into the table's
+    $result = $this->dbc->updateTestState(1, [['key' => 'FOCUS', 'content' => 'HAS', 'timeStamp' => 2]]);
+    $this->assertSame(['CURRENT_UNIT_ID' => 'UNIT_2', 'FOCUS' => 'HAS'], $result);
+  }
+
+  function test_updateTestState_bufferRefused_writesTheTable(): void {
+    $redis = $this->enableTestStateCache(true);
+    $redis->failing = true;
+    $patch = [['key' => 'CURRENT_UNIT_ID', 'content' => 'UNIT_2', 'timeStamp' => 1]];
+
+    $this->dbc->updateTestState(1, $patch);
+
+    $this->assertSame(['CURRENT_UNIT_ID' => 'UNIT_2'], $this->tableState(1));
+  }
+
+  function test_updateTestState_cacheWithoutBuffer_writesTheTableAndTheCache(): void {
+    $redis = $this->enableTestStateCache();
+    $patch = [['key' => 'CURRENT_UNIT_ID', 'content' => 'UNIT_2', 'timeStamp' => 1]];
+
+    $this->dbc->updateTestState(1, $patch);
+
+    $this->assertSame(['CURRENT_UNIT_ID' => 'UNIT_2'], $this->tableState(1));
+    $this->assertSame(['laststate' => '{"CURRENT_UNIT_ID":"UNIT_2"}', 'person_id' => 1], TestStateBuffer::get(1));
+    $this->assertSame(300, $redis->ttl['test-state:1']);
+    $this->assertSame(0, TestStateBuffer::depth());
+  }
+
+  function test_updateTestState_switchesOff_doesNotTouchRedis(): void {
+    $redis = $this->enableTestStateCache(true);
+    SystemConfig::$cache_authToken = false;
+
+    $this->dbc->updateTestState(1, [['key' => 'CURRENT_UNIT_ID', 'content' => 'UNIT_2', 'timeStamp' => 1]]);
+    $this->dbc->getTestById(1);
+    $this->dbc->getOrCreateTest(2, new TestName('BOOKLET.SAMPLE-1'), 'new label');
+
+    $this->assertSame(['CURRENT_UNIT_ID' => 'UNIT_2'], $this->tableState(1));
+    $this->assertSame(0, $redis->calls);
+  }
+
+  function test_getOrCreateTest_replacesAStaleEntryAtTheNewId(): void {
+    $this->enableTestStateCache(true);
+    $nextId = 1 + (int) $this->dbc->_(
+      "select coalesce(pg_sequence_last_value(pg_get_serial_sequence('tests', 'id')::regclass), 0) as id"
+    )['id'];
+    // left behind by a deleted test that had the same id
+    TestStateBuffer::push($nextId, 1, '{"OF":"another person"}');
+
+    $created = $this->dbc->getOrCreateTest(2, new TestName('BOOKLET.SAMPLE-1'), 'new label');
+
+    $this->assertSame($nextId, $created->id);
+    $this->assertEquals((object) [], $created->state);
+    $this->assertSame(['laststate' => '{}', 'person_id' => 2], TestStateBuffer::get($nextId));
+
+    // an existing test is not touched
+    TestStateBuffer::push($nextId, 2, '{"A":"1"}');
+    $this->dbc->getOrCreateTest(2, new TestName('BOOKLET.SAMPLE-1'), 'new label');
+    $this->assertSame('{"A":"1"}', TestStateBuffer::get($nextId)['laststate']);
+  }
+
+  function test_writeTestStates(): void {
+    $written = $this->dbc->writeTestStates([1 => '{"A":"1"}', 3 => '{"B":"2"}', 999999 => '{}']);
+
+    $this->assertSame(2, $written);
+    $this->assertSame(['A' => '1'], $this->tableState(1));
+    $this->assertSame(['B' => '2'], $this->tableState(3));
+    $this->assertSame(0, $this->dbc->writeTestStates([]));
   }
 
   function test_updateUnitState() {
@@ -364,28 +551,6 @@ class TestDAOTest extends TestCase {
     ];
     $resultOverwrite = $this->dbc->getDataParts(1, 'UNIT.SAMPLE');
     $this->assertEquals($expectedOverwrite, $resultOverwrite);
-
-    // Test overwrite when multiple parts have same partid
-    $this->dbc->updateDataParts(
-      1,
-      'UNIT.SAMPLE',
-      [
-        'other' => '{"other": "new_overwrite"}',
-        'other' => '{"other": "completely_new"}'
-      ],
-      'new-response-type',
-      1597903004000
-    );
-    $expectedOverwrite = [
-      'dataParts' => [
-        'all' => '{"name":"Elias Example","age":35}',
-        'other' => '{"other": "completely_new"}',
-        'added' => '{"stuff": "added"}'
-      ],
-      'dataType' => 'the-response-type' // TODO see getDataParts()
-    ];
-    $resultOverwrite = $this->dbc->getDataParts(1, 'UNIT.SAMPLE');
-    $this->assertEquals($expectedOverwrite, $resultOverwrite);
   }
 
   function test_addUnitLogs() {
@@ -430,4 +595,43 @@ class TestDAOTest extends TestCase {
     $this->assertEquals($expectedLogEmptyContent, $actualLogEmptyContent);
   }
 
+  function test_addUnitLogs_rejectsNonUnitLogElements() {
+    $testId = 1;
+    $unitName = 'UNIT_1';
+    $logKey = 'UNIT_LOG_KEY_REJECTED';
+    $testLog = new TestLog($testId, $logKey, 1623456789, '');
+
+    try {
+      $this->dbc->addUnitLogs([new UnitLog($testId, $unitName, $logKey, 1623456789, ''), $testLog]);
+      $this->fail('Expected InvalidArgumentException');
+    } catch (InvalidArgumentException) {
+    }
+
+    $writtenLogs = $this->dbc->_(
+      'select logentry from unit_logs where unit_name = :unitName and test_id = :testId and logentry = :logkey',
+      [':unitName' => $unitName, ':testId' => $testId, ':logkey' => $logKey],
+      true
+    );
+    $this->assertEmpty($writtenLogs);
+  }
+
+
+  private function enableAsyncTestLogs(): RedisFake {
+    require_once "test/unit/mock-classes/RedisFake.php";
+    SystemConfig::$cacheServer_host = 'cache-server';
+    SystemConfig::$cacheServer_port = 6379;
+    SystemConfig::$cacheServer_password = 'secret';
+    SystemConfig::$testLogs_async = true;
+    $redis = new RedisFake();
+    (new ReflectionProperty(CacheService::class, 'redis'))->setValue(null, $redis);
+    return $redis;
+  }
+
+  private function countTestLogs(string $logKey): int {
+    $result = $this->dbc->_(
+      'select count(*) as c from test_logs where booklet_id = 1 and logentry like :logKey',
+      [':logKey' => $logKey . '%']
+    );
+    return (int) ($result['c'] ?? 0);
+  }
 }

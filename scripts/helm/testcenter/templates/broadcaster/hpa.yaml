@@ -1,0 +1,35 @@
+{{- if .Values.deployment.broadcaster.autoscaling.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ .Release.Name }}-broadcaster-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ .Release.Name }}-broadcaster
+  minReplicas: {{ .Values.deployment.broadcaster.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.deployment.broadcaster.autoscaling.maxReplicas }}
+  metrics:
+    # CPU only: the memory of a pod is not released after a load peak, so a memory target would scale up
+    # but never down again.
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.deployment.broadcaster.autoscaling.targetCPUUtilizationPercentage }}
+  {{- with .Values.deployment.broadcaster.autoscaling.scaleUp }}
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: {{ .stabilizationWindowSeconds }}
+      selectPolicy: Max
+      policies:
+        - type: Percent
+          value: {{ .percent }}
+          periodSeconds: {{ .periodSeconds }}
+        - type: Pods
+          value: {{ .pods }}
+          periodSeconds: {{ .periodSeconds }}
+  {{- end }}
+{{- end }}

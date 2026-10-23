@@ -1,0 +1,89 @@
+{{- if .Values.prometheusAdapter.enabled }}
+{{- $prometheusUrl := .Values.prometheusAdapter.prometheusUrl }}
+{{- if not $prometheusUrl }}
+{{- if not .Values.prometheus.enabled }}
+{{- fail "prometheusAdapter.enabled requires prometheus.enabled or prometheusAdapter.prometheusUrl" }}
+{{- end }}
+{{- $prometheusUrl = printf "http://%s-prometheus.%s.svc:9090/" .Release.Name .Release.Namespace }}
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-prometheus-adapter
+spec:
+  replicas: {{ .Values.prometheusAdapter.replicas }}
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}-prometheus-adapter-pod
+  template:
+    metadata:
+      labels:
+        app: {{ .Release.Name }}-prometheus-adapter-pod
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/prometheus-adapter/configmap.yaml") . | sha256sum }}
+    spec:
+      serviceAccountName: {{ .Release.Name }}-prometheus-adapter
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: {{ .Release.Name }}-prometheus-adapter-container
+          image: "{{ .Values.prometheusAdapter.image.repository }}:{{ .Values.prometheusAdapter.image.tag }}"
+          imagePullPolicy: {{ .Values.prometheusAdapter.image.pullPolicy }}
+          args:
+            - --cert-dir=/var/run/serving-cert
+            - --config=/etc/adapter/config.yaml
+            - --metrics-relist-interval=30s
+            - --prometheus-url={{ $prometheusUrl }}
+            - --secure-port=6443
+            - --tls-cipher-suites=TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305,TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
+          ports:
+            - name: https
+              containerPort: 6443
+          {{- with .Values.prometheusAdapter.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          securityContext:
+            privileged: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: https
+              scheme: HTTPS
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 5
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: https
+              scheme: HTTPS
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 5
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: serving-cert
+              mountPath: /var/run/serving-cert
+            - name: config
+              mountPath: /etc/adapter
+              readOnly: true
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: serving-cert
+          emptyDir: {}
+        - name: config
+          configMap:
+            name: {{ .Release.Name }}-prometheus-adapter-config
+{{- end }}

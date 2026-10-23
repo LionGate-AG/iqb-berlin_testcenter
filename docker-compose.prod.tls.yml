@@ -63,6 +63,12 @@ services:
   backend:
     image: ${DOCKERHUB_PROXY}iqbberlin/testcenter-backend:${VERSION}
 
+  log-drainer:
+    image: ${DOCKERHUB_PROXY}iqbberlin/testcenter-backend:${VERSION}
+
+  state-drainer:
+    image: ${DOCKERHUB_PROXY}iqbberlin/testcenter-backend:${VERSION}
+
   db:
     image: ${DOCKERHUB_PROXY}postgres:18.4
     command:

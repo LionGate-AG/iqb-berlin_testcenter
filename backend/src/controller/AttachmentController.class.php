@@ -6,7 +6,6 @@ declare(strict_types=1);
 
 use Slim\Exception\HttpBadRequestException;
 use Slim\Exception\HttpForbiddenException;
-use Slim\Exception\HttpNotFoundException;
 use Slim\Http\ServerRequest as Request;
 use Slim\Http\Response;
 
@@ -19,8 +18,13 @@ class AttachmentController extends Controller {
       $attachment
     );
 
-    $response->write(file_get_contents($filePath));
+    if (Storage::isObjectStore()) {
+      $response->write(Storage::driver()->get(Storage::toLogical($filePath)));
+      return $response->withHeader('Content-Type', FileExt::getMimeType($filePath));
+    }
 
+    $response->write(file_get_contents($filePath));
+    
     return $response->withHeader('Content-Type', FileExt::getMimeType($filePath));
   }
 

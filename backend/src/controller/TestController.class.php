@@ -7,7 +7,6 @@ declare(strict_types=1);
 
 use Slim\Exception\HttpException;
 use Slim\Exception\HttpForbiddenException;
-use Slim\Exception\HttpInternalServerErrorException;
 use Slim\Exception\HttpNotFoundException;
 use Slim\Exception\HttpUnauthorizedException;
 use Slim\Http\Response;
@@ -15,38 +14,20 @@ use Slim\Http\ServerRequest as Request;
 
 class TestController extends Controller {
   public static function put(Request $request, Response $response): Response {
-    /* @var $authToken AuthToken */
+    /** @var AuthToken $authToken */
     $authToken = $request->getAttribute('AuthToken');
     $body = RequestHelper::getFields($request, [
       'bookletName' => 'REQUIRED'
     ]);
 
-    for ($i = 0; $i < 5; $i++) {
-      try {
-        $test = self::testDAO()->getTestByPerson($authToken->getId(), $body['bookletName']);
+    $test = self::testDAO()->getTestByPerson($authToken->getId(), $body['bookletName']);
 
-        if (!$test) {
-          $workspace = new Workspace($authToken->getWorkspaceId());
-          $testName = TestName::fromString($body['bookletName']);
-          $bookletLabel = $workspace->getFileById('Booklet', $testName->bookletFileId)->getLabel();
+    if (!$test) {
+      $workspace = new Workspace($authToken->getWorkspaceId());
+      $testName = TestName::fromString($body['bookletName']);
+      $bookletLabel = $workspace->getFileById('Booklet', $testName->bookletFileId)->getLabel();
 
-          $test = self::testDAO()->createTest($authToken->getId(), $testName, $bookletLabel);
-        }
-
-        break; // success
-
-      } catch (Exception $exception) {
-        error_log(sprintf(
-          'Failed to get/create test session (attempt %d): %s in %s:%d',
-          $i + 1,
-          $exception->getMessage(),
-          $exception->getFile(),
-          $exception->getLine()
-        ));
-        if ($i === 4) {
-          throw new HttpInternalServerErrorException($request, 'Test Session could neither be found nor created.');
-        }
-      }
+      $test = self::testDAO()->getOrCreateTest($authToken->getId(), $testName, $bookletLabel);
     }
 
     if ($test->locked) {
@@ -58,7 +39,7 @@ class TestController extends Controller {
   }
 
   public static function get(Request $request, Response $response): Response {
-    /* @var $authToken AuthToken */
+    /** @var AuthToken $authToken */
     $authToken = $request->getAttribute('AuthToken');     // auth 1
     $testId = (int) $request->getAttribute('test_id');
 
@@ -108,14 +89,14 @@ class TestController extends Controller {
   }
 
   public static function getUnit(Request $request, Response $response): Response {
-    /* @var $authToken AuthToken */
+    /** @var AuthToken $authToken */
     $authToken = $request->getAttribute('AuthToken');
     $unitName = $request->getAttribute('unit_name');
     $unitAlias = $request->getAttribute('alias');
     $testId = (int) $request->getAttribute('test_id');
 
     $workspace = new Workspace($authToken->getWorkspaceId());
-    /* @var $unitFile XMLFileUnit */
+    /** @var XMLFileUnit $unitFile */
     $unitFile = $workspace->getFileById('Unit', $unitName);
 
     if (!$unitAlias) {
@@ -154,7 +135,29 @@ class TestController extends Controller {
     }
 
     [$type, $fileName] = explode('/', $path, 2);
-    $filePath = (new Workspace($workspaceId))->getFilePath($type, $fileName);
+    $workspace = new Workspace($workspaceId);
+
+    if (Storage::isObjectStore()) {
+      $key = $workspace->getFileKey($type, $fileName);
+      if ($key === null) {
+        throw new HttpNotFoundException($request, "File not found: `$path`");
+      }
+      $url = CacheService::getPresignedUrl($key);
+      if ($url === null) {
+        if (!Storage::driver()->exists($key)) {
+          throw new HttpNotFoundException($request, "File not found: `$path`");
+        }
+        $url = Storage::driver()->presignGet($key, SystemConfig::$storage_presignTtl);
+        CacheService::storePresignedUrl($key, $url);
+      }
+      // like FileResponse: keep shared caches from passing the redirect on without the token check
+      return $response
+        ->withStatus(302)
+        ->withHeader('Location', $url)
+        ->withHeader('Cache-Control', 'private');
+    }
+
+    $filePath = $workspace->getFilePath($type, $fileName);
     if ($filePath === null) {
       throw new HttpNotFoundException($request, "File not found: `$path`");
     }
@@ -360,7 +363,7 @@ class TestController extends Controller {
   }
 
   public static function patchState(Request $request, Response $response): Response {
-    /* @var $authToken AuthToken */
+    /** @var AuthToken $authToken */
     $authToken = $request->getAttribute('AuthToken');
 
     $testId = (int) $request->getAttribute('test_id');
@@ -371,7 +374,10 @@ class TestController extends Controller {
       'timeStamp' => 'REQUIRED'
     ]);
 
-    $newState = self::testDAO()->updateTestState($testId, $statePatch);
+    // IsTestOwner has just read this test's row.
+    /** @var array{laststate: ?string, person_id: int} $ownedTest */
+    $ownedTest = $request->getAttribute('OwnedTest');
+    $newState = self::testDAO()->updateTestState($testId, $statePatch, $ownedTest);
 
     $testLogs = array_map(
       fn($entry) => new TestLog(
@@ -415,7 +421,7 @@ class TestController extends Controller {
   }
 
   public static function patchUnitState(Request $request, Response $response): Response {
-    /* @var $authToken AuthToken */
+    /** @var AuthToken $authToken */
     $authToken = $request->getAttribute('AuthToken');
 
     $testId = (int) $request->getAttribute('test_id');
@@ -510,7 +516,7 @@ class TestController extends Controller {
   }
 
   public static function patchLock(Request $request, Response $response): Response {
-    /* @var $authToken AuthToken */
+    /** @var AuthToken $authToken */
     $authToken = $request->getAttribute('AuthToken');
 
     $testId = (int) $request->getAttribute('test_id');
@@ -549,9 +555,17 @@ class TestController extends Controller {
       $response = $response->withHeader('SubscribeToken', $token);
     }
 
-    $testSession = self::testDAO()->getTestSession($testId);
-    if (isset($testSession['laststate']['CONNECTION']) && ($testSession['laststate']['CONNECTION'] == 'LOST')) {
-      self::updateTestState($testId, $testSession, 'CONNECTION', 'POLLING');
+    // The state IsTestOwner has just read tells whether the connection was lost. Only then is the full test
+    // session, a join over four tables, needed.
+    /** @var array{laststate: ?string, person_id: int} $ownedTest */
+    $ownedTest = $request->getAttribute('OwnedTest');
+    /** @var array<string, mixed> $lastState */
+    $lastState = JSON::decode($ownedTest['laststate'], true);
+    if (($lastState['CONNECTION'] ?? null) === 'LOST') {
+      $testSession = self::testDAO()->getTestSession($testId);
+      if (isset($testSession['laststate']['CONNECTION']) && ($testSession['laststate']['CONNECTION'] == 'LOST')) {
+        self::updateTestState($testId, $testSession, 'CONNECTION', 'POLLING');
+      }
     }
 
     return $response->withJson($commands);

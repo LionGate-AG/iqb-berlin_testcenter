@@ -43,9 +43,10 @@ class SysChecksFolder extends Workspace {
   // TODO unit test
 
   /**
+   * @param string[]|null $filterCheckIds null = no filter
    * @return SysCheckReportFile[]
    */
-  public function collectSysCheckReports(array $filterCheckIds = null): array {
+  public function collectSysCheckReports(?array $filterCheckIds = null): array {
     $reportFolderName = $this->getSysCheckReportsPath();
     $reportDir = opendir($reportFolderName);
     $reports = [];
@@ -85,8 +86,8 @@ class SysChecksFolder extends Workspace {
 
     $deletionReport = new FileDeletionReport();
 
+    /** @var SysCheckReportFile $report */
     foreach ($reports as $report) {
-      /* @var SysCheckReportFile $report */
       $fullPath = "$this->workspacePath/SysCheck/reports/{$report->getFileName()}";
       $fieldName = $this->deleteFileFromFs($fullPath);
       $deletionReport->$fieldName[] = $report->getCheckId();

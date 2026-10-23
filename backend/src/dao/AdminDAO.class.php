@@ -3,7 +3,6 @@
 /** @noinspection PhpUnhandledExceptionInspection */
 declare(strict_types=1);
 
-use Slim\Exception\HttpBadRequestException;
 
 class AdminDAO extends DAO {
   /**
@@ -113,6 +112,8 @@ class AdminDAO extends DAO {
   }
 
   public function deleteResultData(int $workspaceId, string $groupName): void {
+    // The delete cascades to the group's tests, whose cached states have to go with them.
+    $testIds = TestStateBuffer::cacheEnabled() ? $this->getTestIdsOfGroup($workspaceId, $groupName) : [];
     $this->_(
       "delete from login_session_groups where group_name = :group_name and workspace_id = :workspace_id",
       [
@@ -120,6 +121,32 @@ class AdminDAO extends DAO {
         ':group_name' => $groupName
       ]
     );
+    // The delete cascades to the group's login and person sessions. Their tokens are not known here.
+    CacheService::flushAuthTokens();
+    TestStateBuffer::drop($testIds);
+  }
+
+  /**
+   * A test started between this and the delete is missed. That is harmless: its person session is deleted as well,
+   * and its cached state goes nowhere but expires.
+   *
+   * @return int[]
+   */
+  private function getTestIdsOfGroup(int $workspaceId, string $groupName): array {
+    $tests = $this->_(
+      'select tests.id
+        from tests
+          inner join person_sessions on tests.person_id = person_sessions.id
+          inner join login_sessions on person_sessions.login_sessions_id = login_sessions.id
+        where login_sessions.workspace_id = :workspace_id and login_sessions.group_name = :group_name',
+      [
+        ':workspace_id' => $workspaceId,
+        ':group_name' => $groupName
+      ],
+      true
+    );
+    /** @var list<array{id: int|string}> $tests */
+    return array_map('intval', array_column($tests ?? [], 'id'));
   }
 
   public function deleteResultDataByPersonAndBooklet(int $workspaceId, array $setsToDelete): void {
@@ -147,16 +174,20 @@ class AdminDAO extends DAO {
 
     // Postgres joins in a DELETE via `using` instead of mysql's multi-table `delete <table> from`. The
     // join conditions move into the where-clause, the matched rows stay the same.
-    $this->_(
+    /** @var list<array{id: int|string}>|null $deletedTests */
+    $deletedTests = $this->_(
       "
       delete from tests
        using person_sessions, login_sessions
        where tests.person_id = person_sessions.id
           and person_sessions.login_sessions_id = login_sessions.id
           and login_sessions.workspace_id = :workspace_id
-          and (login_sessions.name, person_sessions.code, person_sessions.name_suffix, tests.name) in (" . implode(',', $placeholders) . ")" ,
-      $params
+          and (login_sessions.name, person_sessions.code, person_sessions.name_suffix, tests.name) in (" . implode(',', $placeholders) . ")
+       returning tests.id",
+      $params,
+      true
     );
+    TestStateBuffer::drop(array_map('intval', array_column($deletedTests ?? [], 'id')));
 
     foreach ($affectedGroups as $row) {
       $this->_('
@@ -299,9 +330,19 @@ class AdminDAO extends DAO {
 
     $testSessionsData = $this->_($sql, $params, true);
 
+    // a state in the TestStateBuffer may not be in the table yet
+    /** @var list<array{test_id: int|string}> $testIds */
+    $testIds = $testSessionsData ?? [];
+    $cachedLaststates = TestStateBuffer::getLaststates(array_map('intval', array_column($testIds, 'test_id')));
+
     $sessionChangeMessages = new SessionChangeMessageArray();
 
     foreach ($testSessionsData as $testSession) {
+      /** @var array<string, mixed> $testSession */
+      $testId = (int) $testSession['test_id'];
+      if (array_key_exists($testId, $cachedLaststates)) {
+        $testSession['testState'] = $cachedLaststates[$testId];
+      }
       $testState = $this->getTestFullState($testSession);
 
       $sessionChangeMessage = SessionChangeMessage::session(
@@ -511,12 +552,12 @@ class AdminDAO extends DAO {
         ];
         $result[$fileId]['playerPath'] = "ws_{$workspaceId}/{$row['objectName']}";
       } elseif ($row['relationshipType'] === 'isDefinedBy' || $row['relationshipType'] === 'usesScheme') {
-        $filePath = DATA_DIR . "/ws_{$workspaceId}/{$row['objectType']}/{$row['objectName']}";
-        $content = @file_get_contents($filePath);
-        if ($content === false) {
-          error_log("getBookletFiles: failed to read file at {$filePath}");
+        $logicalPath = "ws_{$workspaceId}/{$row['objectType']}/{$row['objectName']}";
+        $content = self::readWorkspaceFile($logicalPath);
+        if ($content === null) {
+          error_log("getBookletFiles: failed to read file at {$logicalPath}");
         }
-        $decoded = $content !== false ? json_decode($content, true) : null;
+        $decoded = $content !== null ? json_decode($content, true) : null;
         $key = $row['relationshipType'] === 'isDefinedBy' ? 'unitDefinition' : 'codingScheme';
         $result[$fileId][$key] = $decoded;
       }
@@ -524,15 +565,19 @@ class AdminDAO extends DAO {
 
     foreach ($result as $fileId => &$unit) {
       $unitName = preg_replace('/\.xml$/i', '', $unit['name']);
-      $vomdPath = DATA_DIR . "/ws_{$workspaceId}/Resource/{$unitName}.vomd";
-      $vomdContent = @file_get_contents($vomdPath);
-      if ($vomdContent !== false) {
+      $vomdContent = self::readWorkspaceFile("ws_{$workspaceId}/Resource/{$unitName}.vomd");
+      if ($vomdContent !== null) {
         $unit['metaData'] = json_decode($vomdContent, true);
       }
     }
     unset($unit);
 
     return $result;
+  }
+
+  /** Contents of a workspace file from the active storage (disk or object store), null if it does not exist. */
+  private static function readWorkspaceFile(string $logicalPath): ?string {
+    return Storage::driver()->exists($logicalPath) ? Storage::driver()->get($logicalPath) : null;
   }
 
   /**
@@ -577,9 +622,31 @@ class AdminDAO extends DAO {
     return $state ?? [];
   }
 
-  public function getResponseReportData($workspaceId, $groups): ?array {
-    $groupsPlaceholders = implode(',', array_fill(0, count($groups), '?'));
-    $bindParams = array_merge([$workspaceId], $groups);
+  /**
+   * Builds a condition on login_sessions.group_name to be appended to a where clause.
+   *
+   * @param string[]|null $groups null = no group filter
+   * @return array{0: string, 1: string[]} SQL starting with `and` (empty without filter) and its replacements
+   */
+  private static function buildGroupFilterClause(?array $groups): array {
+    if ($groups === null) {
+      return ['', []];
+    }
+
+    if (!count($groups)) {
+      return ['and 1 = 0', []];
+    }
+
+    $placeholders = implode(',', array_fill(0, count($groups), '?'));
+    return ["and login_sessions.group_name in ($placeholders)", $groups];
+  }
+
+  /**
+   * @param string[]|null $groups null = no group filter
+   */
+  public function getResponseReportData(int $workspaceId, ?array $groups): ?array {
+    [$groupFilter, $groupFilterParams] = self::buildGroupFilterClause($groups);
+    $bindParams = array_merge([$workspaceId], $groupFilterParams);
 
     // TODO: use data class
     $data = $this->_(<<<EOT
@@ -599,7 +666,7 @@ class AdminDAO extends DAO {
           inner join units on tests.id = units.test_id
       where
         login_sessions.workspace_id = ?
-          and login_sessions.group_name in ($groupsPlaceholders)
+          $groupFilter
       order by
         login_sessions.group_name,
         login_sessions.name,
@@ -645,9 +712,12 @@ class AdminDAO extends DAO {
     return $data;
   }
 
-  public function getLogReportData($workspaceId, $groups): ?array {
-    $groupsPlaceholders = implode(',', array_fill(0, count($groups), '?'));
-    $bindParams = array_merge([$workspaceId], $groups, [$workspaceId], $groups);
+  /**
+   * @param string[]|null $groups null = no group filter
+   */
+  public function getLogReportData(int $workspaceId, ?array $groups): ?array {
+    [$groupFilter, $groupFilterParams] = self::buildGroupFilterClause($groups);
+    $bindParams = array_merge([$workspaceId], $groupFilterParams, [$workspaceId], $groupFilterParams);
 
 
 
@@ -670,12 +740,12 @@ class AdminDAO extends DAO {
             unit_logs
 			  WHERE
             login_sessions.workspace_id = ? AND
-            login_sessions.group_name IN ($groupsPlaceholders) AND
             login_sessions.id = person_sessions.login_sessions_id AND
             person_sessions.id = tests.person_id AND
             tests.id = units.test_id AND
-            units.test_id = unit_logs.test_id and 
+            units.test_id = unit_logs.test_id and
             units.name = unit_logs.unit_name
+            $groupFilter
         
         UNION ALL
         
@@ -695,19 +765,22 @@ class AdminDAO extends DAO {
             test_logs
         WHERE
             login_sessions.workspace_id = ? AND
-            login_sessions.group_name IN ($groupsPlaceholders) AND
             login_sessions.id = person_sessions.login_sessions_id AND
             person_sessions.id = tests.person_id AND
             tests.id = test_logs.booklet_id
+            $groupFilter
 			",
       $bindParams,
       true
     );
   }
 
-  public function getReviewReportData($workspaceId, $groups): ?array {
-    $groupsPlaceholders = implode(',', array_fill(0, count($groups), '?'));
-    $bindParams = array_merge([$workspaceId], $groups, [$workspaceId], $groups);
+  /**
+   * @param string[]|null $groups null = no group filter
+   */
+  public function getReviewReportData(int $workspaceId, ?array $groups): ?array {
+    [$groupFilter, $groupFilterParams] = self::buildGroupFilterClause($groups);
+    $bindParams = array_merge([$workspaceId], $groupFilterParams, [$workspaceId], $groupFilterParams);
 
     // TODO: use data class
     $reviews = $this->_(
@@ -734,9 +807,9 @@ class AdminDAO extends DAO {
         left join person_sessions on person_sessions.id = tests.person_id
         left join login_sessions on login_sessions.id = person_sessions.login_sessions_id
 			where
-        login_sessions.workspace_id = ? and
-        login_sessions.group_name IN ($groupsPlaceholders)
-			
+        login_sessions.workspace_id = ?
+        $groupFilter
+
 			union all
         
       select
@@ -760,8 +833,8 @@ class AdminDAO extends DAO {
         left join person_sessions on tests.person_id = person_sessions.id
         left join login_sessions on person_sessions.login_sessions_id = login_sessions.id
 			where
-        login_sessions.workspace_id = ? and
-        login_sessions.group_name IN ($groupsPlaceholders)
+        login_sessions.workspace_id = ?
+        $groupFilter
 			",
       $bindParams,
       true

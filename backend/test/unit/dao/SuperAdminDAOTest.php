@@ -2,13 +2,16 @@
 
 use PHPUnit\Framework\TestCase;
 
+require_once "test/unit/test-helper/UsesTestStateCache.php";
+
 /**
  * @runTestsInSeparateProcesses
  * @preserveGlobalState disabled
  */
 class SuperAdminDAOTest extends TestCase {
+  use UsesTestStateCache;
+
   private SuperAdminDAO $dbc;
-  private WorkspaceDAO $workspaceDAO;
 
   function setUp(): void {
     require_once "test/unit/TestDB.class.php";
@@ -168,6 +171,19 @@ class SuperAdminDAOTest extends TestCase {
     $this->dbc->deleteWorkspaces(array(1));
     $result = $this->dbc->getWorkspaces();
     $this->assertEquals(array(), $result);
+  }
+
+  public function test_deleteWorkspaces_dropsTheCachedStatesOfItsTests(): void {
+    $this->enableTestStateCache(true);
+    TestStateBuffer::push(1, 1, '{"A":"1"}');
+    TestStateBuffer::store(3, 5, '{}');
+    TestStateBuffer::push(999, 9, '{"OF":"another workspace"}');
+
+    $this->dbc->deleteWorkspaces([1]);
+
+    $this->assertNull(TestStateBuffer::get(1));
+    $this->assertNull(TestStateBuffer::get(3));
+    $this->assertSame([999], array_keys(TestStateBuffer::pending(10)));
   }
 
   public function test_getUsersByWorkspace() {

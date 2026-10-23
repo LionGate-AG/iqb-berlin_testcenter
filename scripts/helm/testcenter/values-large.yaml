@@ -1,0 +1,305 @@
+# Profile for large installations: the settings with which the testcenter serves 100,000 concurrent test takers
+# (30 worker nodes with 4 vCPU each, plus one node with 8 vCPU for the database).
+#
+# Use it on top of the chart's defaults, followed by your own values, which still have to set the domain, the
+# secrets, the storage classes and, if used, the object store:
+#   helm upgrade --install <release> scripts/helm/testcenter \
+#     -f scripts/helm/testcenter/values-large.yaml -f <your-values>.yaml
+#
+# Node sizing, the order in which to switch the features on and the known limits: see the documentation page
+# "Running large exams" (docs/site/pages/scaling-large-installations.md). The per-feature pages ("Scaling: ...")
+# explain each switch.
+
+config:
+  db:
+    # Every backend worker keeps its database connection; PgBouncer multiplexes them onto a few PostgreSQL connections.
+    persistentConnections: true
+
+  # 60 backend pods x 300 PHP-FPM workers = 18,000 client connections over 3 PgBouncer pods.
+  pgbouncer:
+    enabled: true
+    # 6,000 clients per pod on average; the Service spreads them only roughly evenly.
+    maxClientConn: 7000
+    defaultPoolSize: 60
+    # Keeps connections open while idle, so a burst need not open them first.
+    minPoolSize: 20
+    reservePoolSize: 10
+    # 3 x 70 = 210 PostgreSQL connections, below max_connections (deployment.db.settings) with room for the drainers,
+    # the seed Job and maintenance.
+    maxDbConnections: 70
+
+  backend:
+    # The backend validates an XML file against its schema every time it loads the file, not only on upload. With
+    # many test takers that keeps workers busy reading schemas and files. Uploaded files are then not checked
+    # against their schema either: check them on an installation with validation on before.
+    xmlSchemaValidation: false
+    # The token lookup of every test-taker request comes from Redis instead of the database.
+    cacheAuthToken: true
+    # Test logs are queued in Redis and written in batches by the log drainer.
+    asyncTestLogs: true
+    # Test states are kept in Redis and written in batches by the state drainer (requires cacheAuthToken).
+    bufferTestState: true
+
+  cacheServer:
+    # Every backend worker keeps one connection: 60 x 300 = 18,000, plus the drainers.
+    maxClients: 20000
+
+objectStore:
+  # A test start asks the object store for every resource file; the cache answers these from Redis. Takes effect
+  # only with objectStore.enabled, which (with its endpoints) belongs in your own values.
+  cachePresignedUrls: true
+
+ingress:
+  # With Traefik (ingress.traefikEnabled), /api goes straight to the backend: one proxy hop less per request, and the
+  # frontend only serves the application and the files. With another ingress controller, route /api to the Service
+  # `backend` yourself, stripping /api and setting the header X-Forwarded-Prefix: /api.
+  apiDirectToBackend: true
+
+deployment:
+  backend:
+    autoscaling:
+      enabled: true
+      # Scaling up takes minutes; raise minReplicas shortly before a large exam starts.
+      minReplicas: 2
+      # 60 pods carry 100,000 test takers; each holds up to 300 connections to PgBouncer and to Redis.
+      maxReplicas: 60
+      targetCPUUtilizationPercentage: 50
+      # 60% of pm.max_children (300).
+      fpmActiveProcessesTarget: 180
+      # Many test takers log in within minutes; the Kubernetes defaults (+100% or +4 pods per 15 s) lag behind.
+      scaleUp:
+        stabilizationWindowSeconds: 0
+        percent: 200
+        pods: 10
+        periodSeconds: 15
+    podDisruptionBudget:
+      enabled: true
+    resources:
+      limits:
+        cpu: 1500m
+        memory: 2048Mi
+      requests:
+        # The measured use per pod at peak (about 0.9-1.2 CPU). A lower request lets the scheduler pack more pods on a
+        # node than its CPU can serve.
+        cpu: 900m
+        # 1Gi led to evictions at about 1.3 GiB of use.
+        memory: 1280Mi
+    probes:
+      liveness:
+        # A CPU-starved but healthy pod answers /healthz late; do not restart it for that.
+        timeoutSeconds: 5
+        failureThreshold: 5
+    # Spread evenly over the nodes. Soft (ScheduleAnyway): a hard rule stalls rolling updates, because old and new
+    # ReplicaSet are counted separately. nodeTaintsPolicy Honor: tainted nodes (e.g. the database node) do not count
+    # as empty. matchLabelKeys pod-template-hash: the spread is evaluated per rollout.
+    topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: ScheduleAnyway
+        nodeTaintsPolicy: Honor
+        labelSelector:
+          matchLabels:
+            app: "{{ .Release.Name }}-backend-pod"
+        matchLabelKeys:
+          - pod-template-hash
+
+  logDrainer:
+    resources:
+      limits:
+        cpu: 500m
+        memory: 512Mi
+      requests:
+        cpu: 100m
+        memory: 128Mi
+
+  stateDrainer:
+    # About 2,300 state changes per second at 100,000 test takers: about five updates per 2-second round.
+    batchSize: 1000
+    resources:
+      limits:
+        cpu: 500m
+        memory: 256Mi
+      requests:
+        cpu: 100m
+        memory: 128Mi
+
+  frontend:
+    # With /api routed directly, the frontend serves the application, the files and their redirects; 5 pods are
+    # enough. Without the direct route every API request also passes it: allow more pods.
+    autoscaling:
+      enabled: true
+      minReplicas: 2
+      maxReplicas: 5
+      nginxActiveConnectionsTarget: 8000
+      scaleUp:
+        stabilizationWindowSeconds: 0
+        percent: 200
+        pods: 10
+        periodSeconds: 15
+    resources:
+      limits:
+        cpu: 2000m
+        memory: 1024Mi
+      requests:
+        # Below 300m the frontend loses CPU to the backend on busy nodes and its liveness probe fails.
+        cpu: 300m
+        memory: 128Mi
+    probes:
+      liveness:
+        timeoutSeconds: 5
+        failureThreshold: 8
+      readiness:
+        timeoutSeconds: 3
+
+  broadcaster:
+    # One pod holds about 3,300 WebSockets at 100,000 test takers.
+    autoscaling:
+      enabled: true
+      minReplicas: 2
+      maxReplicas: 30
+      targetCPUUtilizationPercentage: 60
+      scaleUp:
+        stabilizationWindowSeconds: 0
+        percent: 200
+        pods: 10
+        periodSeconds: 15
+    resources:
+      limits:
+        cpu: 500m
+        memory: 512Mi
+      requests:
+        cpu: 150m
+        memory: 200Mi
+    probes:
+      liveness:
+        timeoutSeconds: 3
+      readiness:
+        timeoutSeconds: 3
+    # Spread like the backend, so that the WebSockets of one node do not all end up on one pod.
+    topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: ScheduleAnyway
+        nodeTaintsPolicy: Honor
+        labelSelector:
+          matchLabels:
+            app: "{{ .Release.Name }}-broadcaster-pod"
+        matchLabelKeys:
+          - pod-template-hash
+
+  broadcasterRedis:
+    # Peak use is about 100m; the request keeps it from losing CPU on a busy node.
+    resources:
+      limits:
+        cpu: 1500m
+        memory: 512Mi
+      requests:
+        cpu: 500m
+        memory: 128Mi
+
+  cacheServer:
+    # Redis is single-threaded and serves the token cache, the queues and the test states of all pods: throttling
+    # it slows every request.
+    resources:
+      limits:
+        cpu: 2000m
+        memory: 2Gi
+      requests:
+        cpu: 1000m
+        memory: 1Gi
+    probes:
+      liveness:
+        timeoutSeconds: 10
+        failureThreshold: 5
+      readiness:
+        timeoutSeconds: 10
+        failureThreshold: 5
+      startup:
+        timeoutSeconds: 10
+
+  pgbouncer:
+    # Single-threaded: scale with replicas, not with CPU per pod.
+    replicas: 3
+    resources:
+      limits:
+        cpu: 1000m
+        memory: 512Mi
+      requests:
+        cpu: 250m
+        memory: 128Mi
+
+  db:
+    # Sized for a dedicated node with 8 vCPU and 32 GB.
+    settings:
+      # Above PgBouncer's 210 connections plus the drainers, the seed Job, the exporter and maintenance. PostgreSQL
+      # runs one process per connection, so keep it bounded.
+      max_connections: 300
+      # About 25% of the memory limit; the operating system's page cache holds the rest.
+      shared_buffers: 3GB
+      # Planner hint, not an allocation: memory limit minus shared buffers and connection memory.
+      effective_cache_size: 8GB
+      maintenance_work_mem: 512MB
+      # Fewer checkpoints under the sustained write load of an exam.
+      max_wal_size: 4GB
+      # Random reads cost little more than sequential ones on SSD-backed volumes.
+      random_page_cost: "1.1"
+      # Commits would return before their WAL is on disk. Saves an fsync per write, but an operating-system crash
+      # loses the last fraction of a second of commits. Only for databases that can be thrown away.
+      # synchronous_commit: "off"
+    sharedMemorySize: 1Gi
+    resources:
+      limits:
+        # Nearly the whole node. A throttled database stalls every connection.
+        cpu: 7500m
+        # shared_buffers plus the memory of up to max_connections processes, with headroom.
+        memory: 12Gi
+      requests:
+        cpu: 4000m
+        memory: 4Gi
+    # Keep the database alone on its node, e.g.:
+    # nodeSelector:
+    #   <node-pool-label>: <database-pool>
+    # tolerations:
+    #   - key: <taint-key>
+    #     operator: Equal
+    #     value: <taint-value>
+    #     effect: NoSchedule
+
+persistence:
+  # Backend pods on many nodes all mount the backend volumes: needs a storage class that supports ReadWriteMany.
+  backendPvcAccessMode: ReadWriteMany
+  backendConfigPvcAccessMode: ReadWriteMany
+  dbPvcSize: 50Gi
+
+# Metrics for the autoscalers (see "Scaling: Autoscaling").
+fpmExporter:
+  enabled: true
+nginxExporter:
+  enabled: true
+postgresExporter:
+  enabled: true
+prometheus:
+  enabled: true
+  # Memory grows with the number of scraped pods (about 100 here). An OOM-killed Prometheus leaves the HPAs without
+  # their metrics.
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      cpu: 500m
+      memory: 1536Mi
+prometheusAdapter:
+  enabled: true
+  resources:
+    requests:
+      cpu: 100m
+      memory: 180Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
+
+# The 100,000-user runs used a fixed node pool, so no buffer was needed. With a cluster autoscaler, enable it and size
+# each placeholder like an empty node (e.g. 3000m / 4500Mi on a 4-vCPU node), so a burst need not wait for new nodes.
+overprovisioning:
+  enabled: false

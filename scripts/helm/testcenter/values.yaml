@@ -50,6 +50,17 @@ image:
     # -- Redis version tag. Use specific versions for production
     tag: "8.0-bookworm"
 
+  # -- Configuration for the Broadcaster's Redis image (Redis 8.0)
+  # Holds the shared state of all broadcaster pods and carries the messages between them.
+  # Separate from cacheServer, whose keys may be evicted.
+  broadcasterRedis:
+    # -- Image pull policy. Use 'IfNotPresent' for production stability
+    imagePullPolicy: Always
+    # -- Registry path for Redis image. Leave empty for Docker Hub official images
+    registryPath: ""
+    # -- Redis version tag. Use specific versions for production
+    tag: "8.0-bookworm"
+
   # -- Configuration for the file server image (Nginx-based with Redis caching)
   # The file server handles serving test files, resources, and static content.
   # It includes Redis integration for authorization while accessing files.
@@ -96,6 +107,15 @@ image:
     # -- Busybox version tag. Use specific versions for reproducible deployments
     tag: "1.28"
 
+  # -- Configuration for the PgBouncer image (connection pooler, only used with config.pgbouncer.enabled)
+  pgbouncer:
+    # -- Image pull policy
+    imagePullPolicy: IfNotPresent
+    # -- Registry path for the PgBouncer image. Leave empty for Docker Hub
+    registryPath: ""
+    # -- PgBouncer image tag (edoburu/pgbouncer, PgBouncer 1.25.2)
+    tag: "v1.25.2-p0"
+
 # =============================================================================
 # APPLICATION CONFIGURATION
 # =============================================================================
@@ -105,6 +125,38 @@ config:
   db:
     # -- Database that PostgreSQL creates and the backend uses
     database: iqb_tba_testcenter
+    # -- Keep one database connection per backend worker process open across requests
+    # Saves the connection setup on every request, but every worker of every backend replica then holds a
+    # connection while it exists, also when idle. Keep replicas x workers below PostgreSQL's max_connections (500),
+    # or put a connection pooler in front of PostgreSQL (config.pgbouncer.enabled).
+    persistentConnections: false
+
+  # -- Optional PgBouncer connection pooler between the backend and PostgreSQL (transaction pooling)
+  # When enabled, the backend connects to PgBouncer instead of PostgreSQL. The seed Job keeps connecting to
+  # PostgreSQL directly. Sizing: see docs/site/pages/scaling-connection-pooling.md. The pool sizes below are
+  # per PgBouncer pod (deployment.pgbouncer.replicas).
+  pgbouncer:
+    # -- Deploy PgBouncer and route the backend's database traffic through it
+    enabled: false
+    # -- Client connections accepted per PgBouncer pod
+    # Needs to cover backend replicas x worker processes per replica / PgBouncer replicas, plus headroom.
+    maxClientConn: 1000
+    # -- PostgreSQL connections per pod for normal traffic
+    defaultPoolSize: 20
+    # -- PostgreSQL connections per pod kept open also when idle
+    minPoolSize: 0
+    # -- Additional PostgreSQL connections per pod when clients have waited more than 3 seconds
+    reservePoolSize: 5
+    # -- Upper limit of PostgreSQL connections per pod, reserve included
+    # PgBouncer replicas x maxDbConnections must stay below PostgreSQL's max_connections (500), with room for the
+    # seed Job and maintenance connections.
+    maxDbConnections: 40
+    # -- Protocol-level prepared statements tracked per server connection (for clients that use them; the backend
+    # does not use named prepared statements)
+    maxPreparedStatements: 200
+    # -- Seconds a client waits for a free PostgreSQL connection before it gets an error
+    # A waiting client is a blocked backend worker, so failing fast keeps capacity for other requests.
+    queryWaitTimeout: 10
 
   fileServer:
     # -- Enable Redis caching for file server operations (experimental!)
@@ -126,6 +178,7 @@ config:
     fileServerEnabled: true
     # -- Session types protected by an ALTCHA challenge (admin, login, person)
     # Separate multiple session types with spaces. Leave empty to disable protection.
+    # Browsers must reach the Testcenter via HTTPS, otherwise the protected logins are impossible.
     bruteForceProtection: 'admin login person'
     # -- Enable Redis caching of static files
     # References the `redisCacheFiles` anchor. When enabled, the backend
@@ -138,6 +191,28 @@ config:
     requireLoginPassword: false
     # -- Validate uploaded XML files against their XSD schema
     xmlSchemaValidation: true
+    # -- Serve the session-token lookup of test-takers from Redis instead of the database
+    # Only worth it for large installations, where this lookup is one of the most frequent queries.
+    # Tokens are invalidated on login, logout and login import; a Redis outage falls back to the database.
+    # See the documentation page "Scaling: Auth-Token Cache".
+    cacheAuthToken: false
+    # -- Maximum time in seconds a cached token is served without asking the database
+    # Bounds changes made outside the application, e.g. directly in the database. 0 disables the cache.
+    authTokenTtl: 300
+    # -- Queue the test logs in Redis; the log drainer writes them to the database in batches
+    # Only worth it for large installations, where one insert per logged event becomes a large share of the
+    # database load. Delivery is at most once: logs still queued are lost when the cache server restarts, and
+    # the batch the drainer holds is lost when it dies. When Redis is unavailable or the queue is full, the
+    # backend inserts directly. Switching this on also deploys the log drainer (deployment.logDrainer).
+    # See the documentation page "Scaling: Async Test Logs".
+    asyncTestLogs: false
+    # -- Keep the state of running tests in Redis; the state drainer writes it to the database in batches
+    # Only worth it for large installations, where one update per state change becomes a large share of the
+    # database load. Requires cacheAuthToken. The database lags by up to one drain interval; the backend reads
+    # Redis first. States not yet written are lost when the cache server restarts. When Redis is unavailable or
+    # refuses the write, the backend updates the database directly. Switching this on also deploys the state
+    # drainer (deployment.stateDrainer). See the documentation page "Scaling: Test-State Buffer".
+    bufferTestState: false
 
   cacheServer:
     # -- Maximum memory allocation for Redis
@@ -146,6 +221,47 @@ config:
     # Common values: 1gb (small), 2gb (medium), 4gb+ (large deployments)
     # Monitor Redis memory usage and adjust accordingly.
     redisMemoryMax: 1gb
+    # -- Maximum number of client connections (Redis's own default when empty: 10000)
+    # Every backend worker process keeps one connection open, so this needs to exceed backend replicas (at their
+    # maximum) x pm.max_children (300) plus the drainers. When the limit is reached, Redis refuses new connections.
+    maxClients: ""
+
+# =============================================================================
+# OBJECT STORAGE (S3-compatible: SeaweedFS / AWS S3 / STACKIT)
+# =============================================================================
+# When enabled, categorized workspace files are stored in an S3-compatible
+# bucket instead of the shared backend data PVC, and the file-server serves them
+# by redirecting the browser to short-lived presigned URLs. When disabled (the
+# default), the chart keeps the original filesystem/PVC behaviour unchanged.
+objectStore:
+  # -- Master switch. false keeps the original filesystem/PVC behaviour.
+  enabled: false
+  # -- Internal endpoint the backend uses for PUT/GET. Base host only, WITHOUT
+  # the bucket name — path-style addressing adds the bucket. Examples:
+  #   SeaweedFS in-cluster: http://seaweedfs.seaweedfs.svc.cluster.local:8333
+  #   STACKIT:          https://object.storage.eu01.onstackit.cloud
+  endpoint: ""
+  # -- Browser-facing endpoint the presigned URL is SIGNED against. Must be
+  # reachable from the test-taker's browser (ingress/LoadBalancer or public S3).
+  # SigV4 signs the host, so this is not cosmetic. REQUIRED when enabled.
+  publicEndpoint: ""
+  # -- S3 region. Any value for SeaweedFS; the real region for AWS/STACKIT.
+  region: "us-east-1"
+  # -- Bucket that holds the workspace files.
+  bucket: "tc-files"
+  # -- Path-style addressing. true for SeaweedFS/STACKIT, false for AWS.
+  pathStyle: true
+  # -- Use TLS for the internal endpoint. false for in-cluster http SeaweedFS.
+  useSSL: true
+  # -- Lifetime of presigned download URLs, in seconds.
+  presignTtlSeconds: 3600
+  # -- Cache the presigned download URLs in Redis, so that a resource request of
+  # a test-taker needs no round trip to the object store. Entries live 300 s
+  # shorter than presignTtlSeconds, so it needs more than 300 there.
+  # See the documentation page "Scaling: Object Store".
+  cachePresignedUrls: false
+  # -- Name of an existing Secret holding S3_ACCESS_KEY and S3_SECRET_KEY.
+  existingSecret: "tc-objectstore-creds"
 
 # =============================================================================
 # SECRETS AND CREDENTIALS
@@ -170,6 +286,11 @@ secret:
     # PRODUCTION: Replace 'change_me' with a strong, randomly generated password!
     # Redis password protects cached data and prevents unauthorized access.
     redisPassword: &redisPassword change_me
+
+  broadcasterRedis:
+    # -- Password for the broadcaster's Redis
+    # References the `redisPassword` anchor to reuse the same value (separate Redis instance).
+    redisPassword: *redisPassword
 
   fileServer:
     # -- Redis password for file server cache access
@@ -222,6 +343,10 @@ ingress:
   # When using Traefik, specify the certificate resolver name
   # Leave empty to use manually configured certificates
   tlsCertResolver: ""
+  # -- Route /api from Traefik directly to the backend instead of through the frontend's nginx
+  # Saves one proxy hop per API request, and the API no longer depends on the frontend pods. Request size and
+  # timeouts are then those of the Traefik entry point, not of the frontend's nginx (2 GB, 600 s).
+  apiDirectToBackend: false
 
 # =============================================================================
 # DEPLOYMENT CONFIGURATION
@@ -237,6 +362,37 @@ deployment:
     # For production: Start with 2-3 replicas for high availability
     # Scale based on CPU/memory usage and response times
     replicas: 1
+    # -- Horizontal Pod Autoscaler for the backend (off by default). Scales on CPU and, with
+    # fpmExporter enabled, on PHP-FPM worker saturation, whichever asks for more replicas.
+    # When enabled, `replicas` is ignored. Several backend pods need backend volumes that more
+    # than one node can mount (persistence.backendPvcAccessMode: ReadWriteMany), unless all
+    # pods run on one node. See docs/site/pages/scaling-autoscaling.md.
+    autoscaling:
+      enabled: false
+      minReplicas: 1
+      maxReplicas: 4
+      # -- Target average CPU utilization (% of the CPU request). Once nginx's limit_conn sheds
+      # requests (a shed request costs almost no CPU), CPU stops rising with demand, so keep
+      # this target low enough to fire before that point. The FPM metric covers saturation.
+      targetCPUUtilizationPercentage: 50
+      # -- Scale up when the most loaded pod has more than this many busy PHP-FPM workers.
+      # Needs fpmExporter and an adapter that serves fpmExporter.hpaMetricName. An absolute
+      # count: 180 is 60% of the image's pm.max_children (300), which leaves room for the
+      # minutes a new pod needs to start. Change it together with pm.max_children.
+      fpmActiveProcessesTarget: 180
+      # -- Scale-up rate: up to +percent or +pods (whichever is more) per periodSeconds.
+      # These are the Kubernetes defaults; raise them for steep load ramps.
+      scaleUp:
+        stabilizationWindowSeconds: 0
+        percent: 100
+        pods: 4
+        periodSeconds: 15
+    # -- PodDisruptionBudget for the backend (off by default). Rendered only when the minimum
+    # replica count (autoscaling.minReplicas, or replicas without autoscaling) is above 1,
+    # because with a single pod it would block every node drain.
+    podDisruptionBudget:
+      enabled: false
+      minAvailable: 1
     # -- Deployment strategy configuration
     # RollingUpdate ensures zero-downtime deployments
     strategy:
@@ -298,15 +454,64 @@ deployment:
         # -- Number of failures before pod is considered failed to start
         failureThreshold: 60 # 5 minutes overall
     # -- Topology spread constraints for backend deployment
-    # Uncomment to distribute backend pods across different nodes for high availability
-    # For production: Enable to ensure pods are not scheduled on the same node
+    # Uncomment to distribute backend pods across different nodes. Rendered with `tpl`, so values may contain
+    # `{{ .Release.Name }}`. With many replicas, prefer the soft variant (whenUnsatisfiable: ScheduleAnyway, see
+    # values-large.yaml): a hard one stalls rolling updates once every node already has its share.
     topologySpreadConstraints:
     #   - maxSkew: 1
     #     topologyKey: kubernetes.io/hostname
     #     whenUnsatisfiable: DoNotSchedule
     #     labelSelector:
     #       matchLabels:
-    #         app: release-name-backend-pod
+    #         app: "{{ .Release.Name }}-backend-pod"
+
+  # -- Drainer of the test-log queue (see config.backend.asyncTestLogs)
+  # Runs the backend image with `php backend/drain-logs.php`, always exactly one replica. It is deployed whenever
+  # asyncTestLogs is on, or when `enabled` is true. It drains whatever asyncTestLogs says, so keep it enabled when
+  # switching asyncTestLogs off, until its log shows `depth=0`.
+  logDrainer:
+    # -- Deploy the drainer even while asyncTestLogs is off
+    enabled: false
+    # -- Rows per insert, at most 21845 (PostgreSQL's limit of bound parameters per statement)
+    # A larger batch also loses more rows if the drainer dies while writing it.
+    batchSize: 5000
+    # -- Pause in milliseconds when the queue is empty
+    idleMs: 200
+    # -- Seconds between two status lines in the log ("depth=... inserted=... refused=...")
+    # A depth that keeps growing means the drainer is stuck or too slow.
+    reportSeconds: 30
+    # -- One PHP process holding at most one batch
+    resources:
+      limits:
+        cpu: 500m
+        memory: 256Mi
+      requests:
+        cpu: 50m
+        memory: 64Mi
+
+  # -- Drainer of the test-state buffer (see config.backend.bufferTestState)
+  # Runs the backend image with `php backend/drain-test-states.php`, always exactly one replica. It is deployed
+  # whenever bufferTestState is on, or when `enabled` is true. It drains whatever bufferTestState says, so keep it
+  # enabled when switching bufferTestState off, until its log shows `pending=0`.
+  stateDrainer:
+    # -- Deploy the drainer even while bufferTestState is off
+    enabled: false
+    # -- Milliseconds between two rounds, each writing all pending states; at least 100
+    # This is how far the database may lag behind the state the backend serves from Redis.
+    intervalMs: 2000
+    # -- Rows per update, at most 32767 (PostgreSQL's limit of bound parameters per statement)
+    batchSize: 500
+    # -- Seconds between two status lines in the log ("pending=... written=... fallbacks=...")
+    # A pending count that keeps growing means the drainer is stuck or too slow.
+    reportSeconds: 30
+    # -- One PHP process holding at most one batch
+    resources:
+      limits:
+        cpu: 500m
+        memory: 256Mi
+      requests:
+        cpu: 50m
+        memory: 64Mi
 
   # -- Frontend deployment configuration (Angular 16 SPA)
   # The frontend serves the user interface as a static Angular application.
@@ -316,6 +521,24 @@ deployment:
     # For production: Scale based on expected user load
     # Frontend is lightweight and can handle many concurrent users per pod
     replicas: 1
+    # -- Horizontal Pod Autoscaler for the frontend (off by default). Scales on the active nginx
+    # connections of the most loaded pod only; requires nginxExporter and an adapter that serves
+    # nginxExporter.hpaMetricName. When enabled, `replicas` is ignored.
+    autoscaling:
+      enabled: false
+      minReplicas: 1
+      maxReplicas: 3
+      # -- Scale up when the most loaded pod has more than this many active client connections.
+      # A proxied request occupies two of nginx's worker_connections (client and upstream), so
+      # a pod holds about worker_processes x worker_connections / 2 clients. 300 is about 60% of
+      # that for one worker with nginx's default of 1024 connections.
+      nginxActiveConnectionsTarget: 300
+      # -- Scale-up rate, as for the backend. These are the Kubernetes defaults.
+      scaleUp:
+        stabilizationWindowSeconds: 0
+        percent: 100
+        pods: 4
+        periodSeconds: 15
     # -- Deployment strategy configuration
     # RollingUpdate ensures zero-downtime deployments
     strategy:
@@ -452,6 +675,27 @@ deployment:
   # The Broadcaster handles real-time WebSocket connections for live updates,
   # test monitoring, and real-time communication features.
   broadcaster:
+    # -- Number of broadcaster replicas (used only when autoscaling is disabled)
+    # All state and the messages between pods go through broadcaster-redis, so any pod can serve any
+    # WebSocket; 2+ replicas behind the (non-sticky) Service are fine.
+    replicas: 1
+    # -- Graceful shutdown window. Must exceed the preStop sleep (5s) plus the broadcaster's shutdown grace (5s).
+    terminationGracePeriodSeconds: 30
+    # -- Horizontal Pod Autoscaler on CPU (needs the metrics-server)
+    # When enabled, `replicas` is ignored. A PodDisruptionBudget is added whenever 2+ pods run.
+    autoscaling:
+      enabled: false
+      minReplicas: 2
+      maxReplicas: 5
+      # -- Target average CPU utilization (%) across broadcaster pods
+      targetCPUUtilizationPercentage: 70
+      # -- Scale-up rate: up to +percent or +pods (whichever is more) per periodSeconds. Without it, the
+      # Kubernetes defaults apply (+100% or +4 pods per 15 s).
+      # scaleUp:
+      #   stabilizationWindowSeconds: 0
+      #   percent: 100
+      #   pods: 4
+      #   periodSeconds: 15
     # -- Resource allocation for Broadcaster pods
     # Broadcaster needs moderate resources for WebSocket connections
     resources:
@@ -495,7 +739,8 @@ deployment:
         # -- Number of failures before pod is marked as not ready
         failureThreshold: 3
     # -- Topology spread constraints for Broadcaster deployment
-    # Uncomment to distribute broadcaster pods across different nodes
+    # Uncomment to distribute broadcaster pods across different nodes. Rendered with `tpl`, so values may contain
+    # `{{ .Release.Name }}`.
     # For production: Enable for better availability of real-time features
     topologySpreadConstraints:
     #   - maxSkew: 1
@@ -503,7 +748,54 @@ deployment:
     #     whenUnsatisfiable: DoNotSchedule
     #     labelSelector:
     #       matchLabels:
-    #         app: release-name-broadcaster-pod
+    #         app: "{{ .Release.Name }}-broadcaster-pod"
+
+  # -- Broadcaster Redis deployment configuration (Redis 8.0)
+  # Holds registrations, testees, monitors and test sessions of all broadcaster pods; no eviction.
+  broadcasterRedis:
+    # -- Resource allocation for the broadcaster Redis pod
+    # Memory grows with the number of registered testees and monitored sessions
+    resources:
+      limits:
+        # -- Maximum CPU allocation (500m = 0.5 CPU core)
+        cpu: 500m
+        # -- Maximum memory allocation
+        memory: 512Mi
+      requests:
+        # -- Guaranteed CPU allocation
+        cpu: 100m
+        # -- Guaranteed memory allocation
+        memory: 128Mi
+    # -- Health probe configuration (redis-cli ping)
+    probes:
+      liveness:
+        # -- Initial delay before starting liveness probes
+        initialDelaySeconds: 5
+        # -- How often to perform the liveness probe
+        periodSeconds: 10
+        # -- Timeout for each liveness probe
+        timeoutSeconds: 3
+        # -- Minimum consecutive successes for probe to be considered successful
+        successThreshold: 1
+        # -- Number of failures before pod is considered unhealthy and restarted
+        failureThreshold: 3
+      readiness:
+        # -- How often to perform the readiness probe
+        periodSeconds: 5
+        # -- Timeout for each readiness probe
+        timeoutSeconds: 3
+        # -- Minimum consecutive successes for probe to be considered successful
+        successThreshold: 1
+        # -- Number of failures before pod is marked as not ready
+        failureThreshold: 3
+    # -- Topology spread constraints for the broadcaster Redis deployment
+    topologySpreadConstraints:
+    #   - maxSkew: 1
+    #     topologyKey: kubernetes.io/hostname
+    #     whenUnsatisfiable: DoNotSchedule
+    #     labelSelector:
+    #       matchLabels:
+    #         app: release-name-broadcaster-redis-pod
 
   # -- Cache server deployment configuration (Redis 8.0)
   # Redis is used for caching file content, session data, and improving performance.
@@ -577,11 +869,48 @@ deployment:
     #       matchLabels:
     #         app: release-name-cache-server-pod
 
+  # -- PgBouncer deployment configuration (only used with config.pgbouncer.enabled)
+  # PgBouncer is stateless and single-threaded: scale it with replicas rather than with CPU per pod.
+  pgbouncer:
+    # -- Number of PgBouncer replicas, load-balanced by its service
+    replicas: 2
+    # -- Resource allocation for PgBouncer pods
+    resources:
+      limits:
+        # -- A single-threaded PgBouncer cannot use more than one core
+        cpu: 1000m
+        memory: 256Mi
+      requests:
+        cpu: 100m
+        memory: 64Mi
+    # -- Topology spread constraints for PgBouncer deployment
+    topologySpreadConstraints:
+    #   - maxSkew: 1
+    #     topologyKey: kubernetes.io/hostname
+    #     whenUnsatisfiable: DoNotSchedule
+    #     labelSelector:
+    #       matchLabels:
+    #         app: release-name-pgbouncer-pod
+
   # -- Database deployment configuration (PostgreSQL 18.4)
   # PostgreSQL stores all test data, user accounts, results, and application metadata.
   # For production: Configure backup strategies, replication, and monitoring.
   # ⚠️  WARNING: Database is stateful - ensure proper backup and recovery procedures!
   db:
+    # -- PostgreSQL server settings, each passed as `-c name=value`
+    # Keep max_connections above everything that connects: PgBouncer replicas x config.pgbouncer.maxDbConnections,
+    # or backend replicas x PHP-FPM workers without PgBouncer, plus the drainers, the seed Job and maintenance.
+    # Memory settings (shared_buffers, effective_cache_size, ...) belong together with resources.limits.memory.
+    settings:
+      max_connections: 500
+    # -- Size of a memory-backed /dev/shm (e.g. 1Gi). Empty: the container runtime's 64 MB.
+    # Parallel queries allocate dynamic shared memory there and fail with "could not resize shared memory segment"
+    # when it is too small. Counts against the memory limit.
+    sharedMemorySize: ""
+    # -- Node selector for the database pod, e.g. to run it on a dedicated node pool
+    nodeSelector: {}
+    # -- Tolerations for the database pod, e.g. for the taint of a dedicated node pool
+    tolerations: []
     # -- Resource allocation for database pods
     # Database resource requirements depend on data size and query complexity
     resources:
@@ -732,3 +1061,139 @@ network:
       - { }
     policyTypes:
       - Egress
+
+# =============================================================================
+# METRICS AND AUTOSCALING (all optional, off by default)
+# =============================================================================
+# Exporter sidecars publish worker and connection counts, a small Prometheus collects them, and
+# prometheus-adapter serves the maximum across pods to the HPAs as external metrics.
+# See docs/site/pages/scaling-autoscaling.md.
+
+# -- php-fpm_exporter sidecar in the backend pod. Reads PHP-FPM's status page over FastCGI on
+# 127.0.0.1:9000 (pm.status_path in backend/config/fpm-pool.conf).
+fpmExporter:
+  enabled: false
+  image:
+    repository: hipages/php-fpm_exporter
+    tag: "2.2.0"
+    pullPolicy: IfNotPresent
+  # -- Metrics port, announced through the prometheus.io/port pod annotation.
+  port: 9253
+  # -- Name of the external metric (busy workers of the most loaded pod) that the adapter
+  # serves and the backend HPA uses.
+  hpaMetricName: phpfpm_active_processes_max
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      cpu: 50m
+      memory: 64Mi
+
+# -- nginx-prometheus-exporter sidecar in the frontend pod. Reads stub_status from
+# /nginx_status (frontend/nginx.conf), which only answers requests from inside the pod.
+nginxExporter:
+  enabled: false
+  image:
+    repository: nginx/nginx-prometheus-exporter
+    tag: "1.4.2"
+    pullPolicy: IfNotPresent
+  # -- Metrics port, announced through the prometheus.io/port pod annotation.
+  port: 9113
+  # -- Name of the external metric (active connections of the most loaded pod) that the
+  # adapter serves and the frontend HPA uses.
+  hpaMetricName: nginx_connections_active_max
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      cpu: 50m
+      memory: 64Mi
+
+# -- postgres_exporter sidecar in the database pod: connections by state, transactions, locks,
+# cache hit ratio, database size. For monitoring only; no HPA uses it.
+postgresExporter:
+  enabled: false
+  image:
+    repository: quay.io/prometheuscommunity/postgres-exporter
+    tag: "v0.18.1"
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 50m
+      memory: 32Mi
+    limits:
+      cpu: 100m
+      memory: 64Mi
+
+# -- Single Prometheus instance that feeds the adapter; not a monitoring stack. Scrapes every pod
+# in the release namespace annotated with prometheus.io/scrape: "true". Needs only a namespaced
+# Role (pod discovery). Data lives on an emptyDir.
+prometheus:
+  enabled: false
+  image:
+    repository: prom/prometheus
+    tag: "v3.13.2"
+    pullPolicy: IfNotPresent
+  scrapeInterval: 15s
+  # -- Only needs to cover a few HPA evaluation windows.
+  retention: 2h
+  # -- Memory grows with the number of scraped pods. Too small a limit gets Prometheus
+  # OOM-killed under load; while it is down the HPAs cannot read their external metrics.
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi
+
+# -- prometheus-adapter: serves external.metrics.k8s.io from Prometheus.
+# CLUSTER-SCOPED: it registers the APIService v1beta1.external.metrics.k8s.io, which only one
+# server per cluster can own (KEDA and other adapters use the same one), and creates
+# ClusterRoles/ClusterRoleBindings plus a RoleBinding in kube-system. Installing it needs
+# cluster-admin rights. metrics.k8s.io (CPU, memory) stays with the cluster's metrics-server.
+prometheusAdapter:
+  enabled: false
+  replicas: 1
+  # -- Prometheus to query. Empty: the chart's own (prometheus.enabled must then be true).
+  prometheusUrl: ""
+  image:
+    repository: registry.k8s.io/prometheus-adapter/prometheus-adapter
+    tag: "v0.12.0"
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
+
+# =============================================================================
+# OVERPROVISIONING (optional, off by default)
+# =============================================================================
+# -- Overprovisioning buffer (off by default): placeholder pods with a negative priority that hold free node
+# capacity. A pod that needs room preempts them at once instead of waiting the minutes a new node needs; the
+# preempted placeholders become Pending and make the cluster autoscaler add a node in the background. Only useful
+# with a cluster autoscaler. Every placeholder reserves (and costs) the capacity of its requests.
+overprovisioning:
+  enabled: false
+  # -- Number of placeholder pods. Each absorbs one burst until its replacement node has joined.
+  replicas: 1
+  image:
+    repository: registry.k8s.io/pause
+    tag: "3.10"
+    pullPolicy: IfNotPresent
+  # -- Priority of the placeholders; must be below that of every other workload (default 0).
+  priorityValue: -1
+  # -- Size a placeholder close to the free capacity of an empty node, so that it does not fit into gaps on busy
+  # nodes and really keeps a whole node free.
+  resources:
+    requests:
+      cpu: 1000m
+      memory: 1Gi
+    limits:
+      cpu: 1000m
+      memory: 1Gi

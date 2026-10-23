@@ -1,0 +1,48 @@
+{{- if .Values.deployment.backend.autoscaling.enabled }}
+{{- $as := .Values.deployment.backend.autoscaling }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ .Release.Name }}-backend-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ .Release.Name }}-backend
+  minReplicas: {{ $as.minReplicas }}
+  maxReplicas: {{ $as.maxReplicas }}
+  # The HPA scales to whichever metric asks for more replicas.
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ $as.targetCPUUtilizationPercentage }}
+    {{- if .Values.fpmExporter.enabled }}
+    # Busy PHP-FPM workers of the most loaded pod. Unlike CPU, this keeps rising when requests
+    # wait on the database or are shed by nginx's limit_conn. External instead of Pods: the HPA
+    # averages Pods metrics over all pods, which hides a few saturated pods behind idle ones;
+    # the adapter serves max() across pods and target type Value compares against that.
+    - type: External
+      external:
+        metric:
+          name: {{ .Values.fpmExporter.hpaMetricName }}
+        target:
+          type: Value
+          value: {{ $as.fpmActiveProcessesTarget | quote }}
+    {{- end }}
+  {{- with $as.scaleUp }}
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: {{ .stabilizationWindowSeconds }}
+      selectPolicy: Max
+      policies:
+        - type: Percent
+          value: {{ .percent }}
+          periodSeconds: {{ .periodSeconds }}
+        - type: Pods
+          value: {{ .pods }}
+          periodSeconds: {{ .periodSeconds }}
+  {{- end }}
+{{- end }}

@@ -18,7 +18,7 @@ The reasoning behind these rules is spelled out at [cbea.ms/git-commit](https://
 
 ## Backend (PHP)
 
-Linted and formatted with [mago](https://mago.carthage.software), configured in `backend/mago.toml`.
+Checked with [mago](https://mago.carthage.software), configured in `backend/mago.toml`. It runs in the dev backend container: `make test-backend-static-analysis args=lint` or `args=analyze`. The existing code still has many findings, so check that your change adds none. The code is not formatted with mago.
 
 - Every file declares `strict_types=1`, and types are expressed with PHP's native type hints.
 - Use phpDocumentor-style docblocks only where native type hints fall short — in practice whenever arrays appear in a function signature, or whenever values are read out of an array.
@@ -29,7 +29,7 @@ Linted and formatted with [mago](https://mago.carthage.software), configured in 
 
 ## Frontend (Angular)
 
-Linted with ESLint, configured under `eslintConfig` in `package.json`.
+Linted with ESLint, configured in `eslint.config.mjs` in the repository root.
 
 - For small components, keep template and styles inline. Separate files only when readability demands them.
 - In HTML, don't break the line after a tag. Keep everything on one line until it reaches 80 characters.

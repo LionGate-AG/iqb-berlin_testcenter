@@ -13,6 +13,7 @@ RUN luarocks install lua-resty-dns
 
 COPY file-server/nginx.conf /etc/nginx/nginx.conf
 COPY file-server/auth/ /usr/share/nginx/auth
+COPY --chmod=755 file-server/entrypoint.sh /entrypoint.sh
 
 # Enable CORS to be switched on (dev/test) and off (prod) (see nginx.conf)
 RUN echo "" >> /etc/nginx/conf.d/cors.conf
@@ -20,4 +21,5 @@ RUN echo "" >> /etc/nginx/conf.d/cors.conf
 USER www-data
 EXPOSE 8080
 
+ENTRYPOINT ["/entrypoint.sh"]
 CMD ["nginx", "-g", "daemon off;"]

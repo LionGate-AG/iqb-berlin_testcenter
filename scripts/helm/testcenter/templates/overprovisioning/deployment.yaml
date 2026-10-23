@@ -1,0 +1,56 @@
+{{- if .Values.overprovisioning.enabled }}
+# Placeholder pods that hold free node capacity. A pod that needs room preempts them at once; they then become
+# Pending, and the cluster autoscaler adds a node for them in the background.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-overprovisioning
+spec:
+  replicas: {{ .Values.overprovisioning.replicas }}
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}-overprovisioning-pod
+  template:
+    metadata:
+      labels:
+        app: {{ .Release.Name }}-overprovisioning-pod
+      annotations:
+        # placeholders must never block a scale-down of the cluster autoscaler
+        cluster-autoscaler.kubernetes.io/safe-to-evict: "true"
+    spec:
+      priorityClassName: {{ .Release.Name }}-overprovisioning
+      terminationGracePeriodSeconds: 0
+      # Prefer one pod per node, so that every pod holds a node of its own. Preferred, not required: the cluster
+      # autoscaler does not reliably simulate required pod anti-affinity and could leave a pod Pending without adding
+      # a node.
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: {{ .Release.Name }}-overprovisioning-pod
+                topologyKey: kubernetes.io/hostname
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: {{ .Release.Name }}-overprovisioning-container
+          image: "{{ .Values.overprovisioning.image.repository }}:{{ .Values.overprovisioning.image.tag }}"
+          imagePullPolicy: {{ .Values.overprovisioning.image.pullPolicy }}
+          {{- with .Values.overprovisioning.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          securityContext:
+            privileged: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+{{- end }}

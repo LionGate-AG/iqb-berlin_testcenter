@@ -84,6 +84,8 @@ class WorkspaceTest extends TestCase {
 
   function tearDown(): void {
     Mockery::close();
+    SystemConfig::$storage_driver = 'filesystem';
+    Storage::setDriver(null);
     unset($this->vfs);
   }
 
@@ -102,6 +104,69 @@ class WorkspaceTest extends TestCase {
     $result = $workspace->getWorkspacePath();
     $expectation = 'vfs://root/data/ws_1';
     $this->assertEquals($expectation, $result);
+  }
+
+  /**
+   * Switches to an in-memory object store. getFileKey() works on strings only and must not touch it.
+   */
+  private function useObjectStore(): StorageDriverFake {
+    require_once "test/unit/mock-classes/StorageDriverFake.php";
+    $storage = new StorageDriverFake();
+    SystemConfig::$storage_driver = 's3';
+    Storage::setDriver($storage);
+
+    return $storage;
+  }
+
+  function test_getFileKey(): void {
+    $storage = $this->useObjectStore();
+    $workspace = new Workspace(1);
+
+    $this->assertSame('ws_1/Resource/player.html', $workspace->getFileKey('Resource', 'player.html'));
+    $this->assertSame('ws_1/Resource/sub/file.html', $workspace->getFileKey('Resource', 'sub/file.html'));
+    $this->assertSame(
+      'ws_1/Testtakers/SAMPLE_TESTTAKERS.XML',
+      $workspace->getFileKey('Testtakers', 'SAMPLE_TESTTAKERS.XML')
+    );
+
+    $this->assertSame([], $storage->calls);
+  }
+
+  function test_getFileKey_rejectsUnknownType(): void {
+    $storage = $this->useObjectStore();
+    $workspace = new Workspace(1);
+
+    foreach (['Secrets', '', '../ws_2', 'Resource/..'] as $type) {
+      $this->assertNull($workspace->getFileKey($type, 'player.html'), "type `$type` must be rejected");
+    }
+
+    $this->assertSame([], $storage->calls);
+  }
+
+  function test_getFileKey_rejectsNamesThatCouldLeaveTheirFolder(): void {
+    $storage = $this->useObjectStore();
+    $workspace = new Workspace(1);
+
+    $names = [
+      '../Booklet/SAMPLE_BOOKLET.XML',
+      '../Testtakers/SAMPLE_TESTTAKERS.XML',
+      '../../ws_2/Resource/player.html',
+      'sub/../../ws_2/Resource/player.html',
+      '..',
+      '.',
+      './player.html',
+      'sub//file.html',
+      'player.html/',
+      '',
+      '/etc/passwd',
+      'sub\\..\\player.html',
+      "player.html\0.png"
+    ];
+    foreach ($names as $name) {
+      $this->assertNull($workspace->getFileKey('Resource', $name), 'must be rejected: ' . json_encode($name));
+    }
+
+    $this->assertSame([], $storage->calls);
   }
 
   function test_deleteFiles() {
@@ -153,6 +218,41 @@ class WorkspaceTest extends TestCase {
       'verona-player-simple-6.0.html'
     ];
     $this->assertEquals($resourcesLeftExpected, $resourcesLeft);
+  }
+
+  private function usePresignedUrlCache(): RedisFake {
+    require_once "test/unit/mock-classes/RedisFake.php";
+    SystemConfig::$cacheServer_host = 'cache-server';
+    SystemConfig::$cacheServer_port = 6379;
+    SystemConfig::$cacheServer_password = 'secret';
+    SystemConfig::$cache_presignedUrls = true;
+    SystemConfig::$storage_presignTtl = 3600;
+    $redis = new RedisFake();
+    (new ReflectionProperty(CacheService::class, 'redis'))->setValue(null, $redis);
+    $redis->store['presigned-url:ws_1/Resource/somePlayer.HTML'] = 'https://s3/signed';
+
+    $this->workspaceDaoMock->allows('getFiles')->andReturn([]);
+    $this->workspaceDaoMock->allows('getBlockedFiles')->andReturn([]);
+    $this->workspaceDaoMock->allows('updateContentTypeBasedOnRemainingTesttakers');
+
+    return $redis;
+  }
+
+  function test_deleteFiles_flushesPresignedUrls(): void {
+    $redis = $this->usePresignedUrlCache();
+    file_put_contents(DATA_DIR . '/ws_1/Resource/somePlayer.HTML', 'player content');
+
+    (new Workspace(1))->deleteFiles(['Resource/somePlayer.HTML']);
+
+    $this->assertSame([], $redis->store);
+  }
+
+  function test_deleteFiles_keepsPresignedUrlsIfNothingWasDeleted(): void {
+    $redis = $this->usePresignedUrlCache();
+
+    (new Workspace(1))->deleteFiles(['Resource/not-there.html']);
+
+    $this->assertSame(['presigned-url:ws_1/Resource/somePlayer.HTML'], array_keys($redis->store));
   }
 
   function test_deleteFiles_rejectIfDependencies() {

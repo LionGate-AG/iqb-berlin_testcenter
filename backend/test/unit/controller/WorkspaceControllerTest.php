@@ -35,8 +35,6 @@ final class WorkspaceControllerTest extends TestCase {
 
   private array $callable;
   private array $reportMock;
-  private AdminDAO|MockInterface $adminDaoMock;
-  private SysChecksFolder|MockInterface $sysChecksFolderMock;
   private Workspace|MockInterface $workspaceMock;
   private WorkspaceDAO|MockInterface $workspaceDaoMock;
   private UploadedFilesHandler|MockInterface $uploadedFilesHandler;
@@ -62,8 +60,6 @@ final class WorkspaceControllerTest extends TestCase {
       ReportType::REVIEW->value => Mockery::mock('overload:' . ReviewReportOutput::class),
       ReportType::SYSCHECK->value => Mockery::mock('overload:' . SysCheckReportOutput::class)
     ];
-    $this->adminDaoMock = Mockery::mock('overload:' . AdminDAO::class);
-    $this->sysChecksFolderMock = Mockery::mock('overload:' . SysChecksFolder::class);
     $this->workspaceMock = Mockery::mock('overload:' . Workspace::class);
     $this->workspaceDaoMock = Mockery::mock( 'overload:' . WorkspaceDAO::class);
 
@@ -194,6 +190,34 @@ final class WorkspaceControllerTest extends TestCase {
 
   function test_GetReportWithSystemCheckAndJSONAndEmptyDataIds(): void {
     $this->testGetReportWithEmptyDataIds(ReportType::SYSCHECK->value, 'application/json');
+  }
+
+  function test_GetReport_WithoutDataIdsCreatesUnfilteredReport(): void {
+    $this->testGetReportPassesDataIdsToFactory('', null);
+  }
+
+  function test_GetReport_WithDataIdsCreatesFilteredReport(): void {
+    $this->testGetReportPassesDataIdsToFactory('id1,id2', ['id1', 'id2']);
+  }
+
+  private function testGetReportPassesDataIdsToFactory(string $dataIdsParam, ?array $expectedDataIds): void {
+    // Arrange
+    $this->dataIds = $dataIdsParam;
+    $reportType = ReportType::LOG->value;
+    $path = "/$this->workspaceId/report/$reportType";
+
+    // overload-mocked instances take over the expectations set before they are created
+    $this->reportMock[$reportType]->expects('generate')->andReturn(false);
+    Mockery::mock('alias:' . ReportOutputFactory::class)
+      ->expects('createReportOutput')
+      ->with($this->workspaceId, $expectedDataIds, ReportType::LOG, ReportFormat::JSON)
+      ->andReturn(new LogReportOutput($this->workspaceId, $expectedDataIds, ReportFormat::JSON));
+
+    // Act
+    $response = $this->callSlimFramework($path, 'application/json', $reportType);
+
+    // Assert
+    parent::assertSame(200, $response->getStatusCode());
   }
 
   function test_GetReportWithLogAndCSVAndNoneReportGeneration(): void {
@@ -400,6 +424,43 @@ final class WorkspaceControllerTest extends TestCase {
 
     $this->assertEquals(207, $response->getStatusCode());
     $this->assertEquals(json_encode($deletionReport), $response->getBody()->getContents());
+  }
+
+  private function getFileRequest(string $type, string $fileName): Request {
+    return RequestCreator::create('GET', "/workspace/1/file/$type/$fileName")
+      ->withAttribute('ws_id', 1)
+      ->withAttribute('type', $type)
+      ->withAttribute('filename', $fileName);
+  }
+
+  function test_getFile_objectStore_streamsTheObject(): void {
+    require_once "test/unit/mock-classes/StorageDriverFake.php";
+    SystemConfig::$storage_driver = 's3';
+    Storage::setDriver(new StorageDriverFake(['ws_1/Booklet/SAMPLE_BOOKLET.XML' => '<Booklet/>']));
+    $this->workspaceMock->allows('getFileKey')->andReturn('ws_1/Booklet/SAMPLE_BOOKLET.XML');
+
+    $response = WorkspaceController::getFile($this->getFileRequest('Booklet', 'SAMPLE_BOOKLET.XML'), ResponseCreator::createEmpty());
+
+    $this->assertSame(200, $response->getStatusCode());
+    $this->assertSame('text/xml', $response->getHeaderLine('Content-Type'));
+    $this->assertSame('private', $response->getHeaderLine('Cache-Control'));
+    $this->assertSame('attachment; filename="SAMPLE_BOOKLET.XML"', $response->getHeaderLine('Content-Disposition'));
+    $this->assertSame('<Booklet/>', (string) $response->getBody());
+  }
+
+  function test_getFile_objectStore_rejectedNameIsNotFound(): void {
+    require_once "test/unit/mock-classes/StorageDriverFake.php";
+    $storage = new StorageDriverFake();
+    SystemConfig::$storage_driver = 's3';
+    Storage::setDriver($storage);
+    $this->workspaceMock->allows('getFileKey')->andReturn(null);
+
+    try {
+      WorkspaceController::getFile($this->getFileRequest('Resource', '../Testtakers/SAMPLE_TESTTAKERS.XML'), ResponseCreator::createEmpty());
+      $this->fail('expected a 404');
+    } catch (HttpNotFoundException) {
+      $this->assertSame([], $storage->calls);
+    }
   }
 
   function test_postFile() {

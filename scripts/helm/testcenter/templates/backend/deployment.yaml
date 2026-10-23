@@ -2,8 +2,14 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {{ .Release.Name }}-backend
+  annotations:
+    # Start the backend only after the seed job (wave 1) has initialized the database schema.
+    argocd.argoproj.io/sync-wave: "2"
 spec:
+  {{- if not .Values.deployment.backend.autoscaling.enabled }}
+  # Omitted when the HPA manages the replica count, so upgrades do not reset it.
   replicas: {{ .Values.deployment.backend.replicas }}
+  {{- end }}
   selector:
     matchLabels:
       app: {{ .Release.Name }}-backend-pod
@@ -14,12 +20,18 @@ spec:
         checksum/secret: {{ include (print $.Template.BasePath "/backend/secret.yaml") . | sha256sum }}
         # Restart the backend when the shared database credentials change.
         checksum/db-secret: {{ include (print $.Template.BasePath "/db/secret.yaml") . | sha256sum }}
+        {{- if .Values.fpmExporter.enabled }}
+        # Picked up by the chart's Prometheus (templates/prometheus/configmap.yaml).
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ .Values.fpmExporter.port | quote }}
+        prometheus.io/path: "/metrics"
+        {{- end }}
       labels:
         app: {{ .Release.Name }}-backend-pod
     spec:
       {{- if .Values.deployment.backend.topologySpreadConstraints }}
       topologySpreadConstraints:
-        {{- .Values.deployment.backend.topologySpreadConstraints | toYaml | nindent 8 }}
+        {{- tpl (.Values.deployment.backend.topologySpreadConstraints | toYaml) . | nindent 8 }}
       {{- end }}
       securityContext:
         runAsNonRoot: true
@@ -40,7 +52,7 @@ spec:
             capabilities:
               drop:
                 - ALL
-          command: [ "apache2-foreground" ]
+          command: [ "/run-server.sh" ]
           env:
             - name: BROADCASTER_ENABLED
               valueFrom:
@@ -71,11 +83,54 @@ spec:
                 configMapKeyRef:
                   name: {{ .Release.Name }}-backend-config
                   key: REDIS_CACHE_FILES
+            {{- if .Values.objectStore.enabled }}
+            # Object-store path only. Without this block STORAGE_DRIVER stays unset,
+            # SystemConfig keeps its 'filesystem' default and the backend serves from
+            # the data PVC exactly as before.
+            - name: STORAGE_DRIVER
+              value: "s3"
+            - name: S3_ENDPOINT
+              value: {{ .Values.objectStore.endpoint | quote }}
+            - name: S3_PUBLIC_ENDPOINT
+              value: {{ .Values.objectStore.publicEndpoint | quote }}
+            - name: S3_REGION
+              value: {{ .Values.objectStore.region | quote }}
+            - name: S3_BUCKET
+              value: {{ .Values.objectStore.bucket | quote }}
+            - name: S3_USE_PATH_STYLE
+              value: {{ .Values.objectStore.pathStyle | quote }}
+            - name: S3_USE_SSL
+              value: {{ .Values.objectStore.useSSL | quote }}
+            - name: S3_PRESIGN_TTL
+              value: {{ .Values.objectStore.presignTtlSeconds | quote }}
+            - name: TESTCENTER_CACHE_PRESIGNED_URLS
+              value: {{ .Values.objectStore.cachePresignedUrls | quote }}
+            - name: S3_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.objectStore.existingSecret }}
+                  key: S3_ACCESS_KEY
+            - name: S3_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.objectStore.existingSecret }}
+                  key: S3_SECRET_KEY
+            {{- end }}
             # DB_* is the stable application interface. The database pod maps it to PostgreSQL below.
+            # With PgBouncer, only the host changes: it listens on the PostgreSQL port.
             - name: DB_HOST
+              {{- if .Values.config.pgbouncer.enabled }}
+              value: '{{ .Release.Name }}-pgbouncer'
+              {{- else }}
               value: '{{ .Release.Name }}-db'
+              {{- end }}
             - name: DB_PORT
               value: '5432'
+            - name: DB_PERSISTENT_CONNECTIONS
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ .Release.Name }}-backend-config
+                  key: DB_PERSISTENT_CONNECTIONS
             - name: DB_DATABASE
               value: {{ .Values.config.db.database | quote }}
             - name: DB_USER
@@ -113,6 +168,26 @@ spec:
                 configMapKeyRef:
                   name: {{ .Release.Name }}-backend-config
                   key: XML_SCHEMA_VALIDATION
+            - name: TESTCENTER_CACHE_AUTH_TOKEN
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ .Release.Name }}-backend-config
+                  key: TESTCENTER_CACHE_AUTH_TOKEN
+            - name: TESTCENTER_AUTH_TOKEN_TTL
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ .Release.Name }}-backend-config
+                  key: TESTCENTER_AUTH_TOKEN_TTL
+            - name: TESTCENTER_ASYNC_TEST_LOGS
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ .Release.Name }}-backend-config
+                  key: TESTCENTER_ASYNC_TEST_LOGS
+            - name: TESTCENTER_BUFFER_TEST_STATE
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ .Release.Name }}-backend-config
+                  key: TESTCENTER_BUFFER_TEST_STATE
             - name: ADMIN_INIT_PASSWORD
               valueFrom:
                 secretKeyRef:
@@ -136,9 +211,12 @@ spec:
             # backend-config-volume is still kept, as config/.lock files still exist; even if config.ini does not exist anymore
             - name: backend-config-volume
               mountPath: /var/www/testcenter/backend/config
+          # /healthz is answered by nginx without a PHP-FPM worker: a pod whose workers are all busy
+          # is neither restarted nor taken out of the Service. run-server.sh ends the container if
+          # nginx or PHP-FPM dies.
           livenessProbe:
             httpGet:
-              path: /version
+              path: /healthz
               port: 8080
             periodSeconds: {{ .Values.deployment.backend.probes.liveness.periodSeconds }}
             timeoutSeconds: {{ .Values.deployment.backend.probes.liveness.timeoutSeconds }}
@@ -146,12 +224,13 @@ spec:
             failureThreshold: {{ .Values.deployment.backend.probes.liveness.failureThreshold }}
           readinessProbe:
             httpGet:
-              path: /system/status
+              path: /healthz
               port: 8080
             periodSeconds: {{ .Values.deployment.backend.probes.readiness.periodSeconds }}
             timeoutSeconds: {{ .Values.deployment.backend.probes.readiness.timeoutSeconds }}
             successThreshold: {{ .Values.deployment.backend.probes.readiness.successThreshold }}
             failureThreshold: {{ .Values.deployment.backend.probes.readiness.failureThreshold }}
+          # /version is served by PHP-FPM, so the pod only becomes ready once PHP answers.
           startupProbe:
             httpGet:
               path: /version
@@ -160,6 +239,35 @@ spec:
             timeoutSeconds: {{ .Values.deployment.backend.probes.startup.timeoutSeconds }}
             successThreshold: {{ .Values.deployment.backend.probes.startup.successThreshold }}
             failureThreshold: {{ .Values.deployment.backend.probes.startup.failureThreshold }}
+        {{- if .Values.fpmExporter.enabled }}
+        # Reads PHP-FPM's worker counts over FastCGI from pm.status_path (backend/config/fpm-pool.conf)
+        # on 127.0.0.1:9000, bypassing nginx, and serves them as Prometheus metrics.
+        - name: {{ .Release.Name }}-fpm-exporter
+          image: "{{ .Values.fpmExporter.image.repository }}:{{ .Values.fpmExporter.image.tag }}"
+          imagePullPolicy: {{ .Values.fpmExporter.image.pullPolicy }}
+          args:
+            - --phpfpm.scrape-uri=tcp://127.0.0.1:9000/status
+            - --web.listen-address=:{{ .Values.fpmExporter.port }}
+            # Recount active workers from the per-worker list: PHP-FPM's own summary can be
+            # inconsistent (https://bugs.php.net/bug.php?id=76003), and this value drives the HPA.
+            - --phpfpm.fix-process-count
+          ports:
+            - name: fpm-metrics
+              containerPort: {{ .Values.fpmExporter.port }}
+          {{- with .Values.fpmExporter.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          securityContext:
+            runAsUser: 65534
+            runAsGroup: 65534
+            privileged: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+        {{- end }}
       initContainers:
         - name: wait-for-db-initcontainer
           image: "{{ .Values.image.busybox.registryPath }}busybox:{{ .Values.image.busybox.tag | default "latest" }}"
@@ -172,6 +280,18 @@ spec:
                 - ALL
           # BusyBox nc waits for input after a successful connection unless it receives a timeout.
           command: [ 'sh', '-c', 'until nc -z -w 2 {{ .Release.Name }}-db 5432; do echo waiting for {{ .Release.Name }}-db; sleep 2; done;' ]
+        {{- if .Values.config.pgbouncer.enabled }}
+        - name: wait-for-pgbouncer-initcontainer
+          image: "{{ .Values.image.busybox.registryPath }}busybox:{{ .Values.image.busybox.tag | default "latest" }}"
+          imagePullPolicy: {{ .Values.image.busybox.imagePullPolicy }}
+          securityContext:
+            privileged: false
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          command: [ 'sh', '-c', 'until nc -z -w 2 {{ .Release.Name }}-pgbouncer 5432; do echo waiting for {{ .Release.Name }}-pgbouncer; sleep 2; done;' ]
+        {{- end }}
       volumes:
         - name: backend-volume
           persistentVolumeClaim:

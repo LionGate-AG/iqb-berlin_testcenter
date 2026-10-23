@@ -27,7 +27,17 @@ class BroadcastService {
     return BroadcastService::send('push/session-change', json_encode($sessionChange));
   }
 
+  /**
+   * Sends the given session changes to the broadcaster. An empty list is not sent.
+   *
+   * @param SessionChangeMessage[] $sessionChanges
+   * @return string|null the broadcaster's response, null if nothing was sent or the call failed
+   */
   static function sessionChanges(array $sessionChanges): ?string {
+    if (empty($sessionChanges)) {
+      return null;
+    }
+
     return BroadcastService::send('push/session-changes', json_encode($sessionChanges));
   }
 
@@ -50,7 +60,10 @@ class BroadcastService {
       CURLOPT_RETURNTRANSFER => true,
       CURLOPT_ENCODING => "",
       CURLOPT_MAXREDIRS => 10,
-      CURLOPT_TIMEOUT => 5,
+      // Short timeouts: the backend calls the broadcaster within user requests (e.g. on every login), so an
+      // unreachable or overloaded broadcaster must not hold PHP workers for long.
+      CURLOPT_CONNECTTIMEOUT => 1,
+      CURLOPT_TIMEOUT => 2,
       CURLOPT_FOLLOWLOCATION => true,
       CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
       CURLOPT_CUSTOMREQUEST => $verb,

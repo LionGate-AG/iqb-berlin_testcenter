@@ -3,7 +3,17 @@ kind: Job
 metadata:
   name: {{ .Release.Name }}-backend-container-seed
   annotations:
+    # Plain Helm (`helm install/upgrade`): run as an install/upgrade hook and replace any
+    # previous run. (Under Helm there is no health-gating deadlock.)
     "helm.sh/hook": post-install,post-upgrade,post-rollback
+    "helm.sh/hook-delete-policy": before-hook-creation
+    # Argo CD: run during the Sync phase (NOT PostSync). PostSync waits for all resources to be
+    # healthy first, but the backend cannot become healthy until this job has initialized the
+    # database schema -> deadlock. Sync-wave 1 places it after the database (wave 0, gated on its
+    # readiness probe) and before the backend (wave 2).
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    argocd.argoproj.io/sync-wave: "1"
 spec:
   template:
     spec:
@@ -57,6 +67,36 @@ spec:
                 configMapKeyRef:
                   name: {{ .Release.Name }}-backend-config
                   key: REDIS_CACHE_FILES
+            {{- if .Values.objectStore.enabled }}
+            - name: STORAGE_DRIVER
+              value: "s3"
+            - name: S3_ENDPOINT
+              value: {{ .Values.objectStore.endpoint | quote }}
+            - name: S3_PUBLIC_ENDPOINT
+              value: {{ .Values.objectStore.publicEndpoint | quote }}
+            - name: S3_REGION
+              value: {{ .Values.objectStore.region | quote }}
+            - name: S3_BUCKET
+              value: {{ .Values.objectStore.bucket | quote }}
+            - name: S3_USE_PATH_STYLE
+              value: {{ .Values.objectStore.pathStyle | quote }}
+            - name: S3_USE_SSL
+              value: {{ .Values.objectStore.useSSL | quote }}
+            - name: S3_PRESIGN_TTL
+              value: {{ .Values.objectStore.presignTtlSeconds | quote }}
+            - name: S3_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.objectStore.existingSecret }}
+                  key: S3_ACCESS_KEY
+            - name: S3_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.objectStore.existingSecret }}
+                  key: S3_SECRET_KEY
+            {{- end }}
+            # Always PostgreSQL directly, also with PgBouncer: the Job applies schema changes, which do not belong in a
+            # transaction-pooled connection.
             - name: DB_HOST
               value: "{{ .Release.Name }}-db"
             - name: DB_PORT
@@ -98,6 +138,17 @@ spec:
                 configMapKeyRef:
                   name: {{ .Release.Name }}-backend-config
                   key: XML_SCHEMA_VALIDATION
+            # so that login imports during initialization invalidate the tokens cached by the backend
+            - name: TESTCENTER_CACHE_AUTH_TOKEN
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ .Release.Name }}-backend-config
+                  key: TESTCENTER_CACHE_AUTH_TOKEN
+            - name: TESTCENTER_AUTH_TOKEN_TTL
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ .Release.Name }}-backend-config
+                  key: TESTCENTER_AUTH_TOKEN_TTL
             - name: ADMIN_INIT_PASSWORD
               valueFrom:
                 secretKeyRef:

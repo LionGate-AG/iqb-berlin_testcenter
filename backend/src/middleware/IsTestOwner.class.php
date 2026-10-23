@@ -22,15 +22,18 @@ class IsTestOwner {
       throw new HttpBadRequestException($request, "No valid test-Id: {$params['test_id']}");
     }
 
-    /* @var $authToken AuthToken */
+    /** @var AuthToken $authToken */
     $authToken = $request->getAttribute('AuthToken');
 
     $sessionDAO = new SessionDAO();
 
-    if (!$sessionDAO->ownsTest($authToken->getToken(), $params['test_id'])) {
+    // Every route using this middleware requires a person token, so getId() is the person session's id.
+    $ownedTest = $sessionDAO->getOwnedTest($authToken->getId(), (int) $params['test_id']);
+
+    if ($ownedTest === null) {
       throw new HttpForbiddenException($request, "Access to test {$params['test_id']} is not provided.");
     }
 
-    return $handler->handle($request);
+    return $handler->handle($request->withAttribute('OwnedTest', $ownedTest));
   }
 }

@@ -6,6 +6,7 @@ declare(strict_types=1);
 use PHPUnit\Framework\TestCase;
 
 require_once "test/unit/test-helper/AssertsArraysIgnoringOrder.php";
+require_once "test/unit/test-helper/UsesTestStateCache.php";
 
 /**
  * @runTestsInSeparateProcesses
@@ -13,6 +14,7 @@ require_once "test/unit/test-helper/AssertsArraysIgnoringOrder.php";
  */
 final class AdminDAOTest extends TestCase {
   use AssertsArraysIgnoringOrder;
+  use UsesTestStateCache;
 
   private AdminDAO $dbc;
 
@@ -215,6 +217,38 @@ final class AdminDAOTest extends TestCase {
     parent::assertSame($expectedReviewReportData, $actualReviewReportData);
   }
 
+  /**
+   * @dataProvider reportDataMethods
+   */
+  function testGetReportDataWithoutGroupFilterCoversAllGroups(string $method): void {
+    $allGroups = $this->dbc->$method(1, null);
+
+    $perGroup = array_merge(
+      $this->dbc->$method(1, ['sample_group']),
+      $this->dbc->$method(1, ['review_group'])
+    );
+    parent::assertNotEmpty($allGroups);
+    $this->assertSameIgnoringOrder($perGroup, $allGroups);
+  }
+
+  /**
+   * @dataProvider reportDataMethods
+   */
+  function testGetReportDataWithEmptyGroupFilterReturnsNothing(string $method): void {
+    parent::assertSame([], $this->dbc->$method(1, []));
+  }
+
+  /**
+   * @return array<string, string[]>
+   */
+  static function reportDataMethods(): array {
+    return [
+      'responses' => ['getResponseReportData'],
+      'logs' => ['getLogReportData'],
+      'reviews' => ['getReviewReportData']
+    ];
+  }
+
   function test_addCommand() {
     $command = new Command(-1, 'a_keyword', 1597905000, 'first_argument', 'second_argument');
     $commandId = $this->dbc->storeCommand(1, [1], $command);
@@ -290,6 +324,52 @@ final class AdminDAOTest extends TestCase {
     $this->assertEquals(0, $this->countTableRows('unit_logs'));
     $this->assertEquals(0, $this->countTableRows('unit_reviews'));
     $this->assertEquals(0, $this->countTableRows('test_reviews'));
+  }
+
+  function test_deleteResultData_dropsTheCachedStatesOfTheGroup(): void {
+    $this->enableTestStateCache(true);
+    TestStateBuffer::push(1, 1, '{"A":"1"}');
+    TestStateBuffer::store(2, 1, '{}');
+    TestStateBuffer::push(3, 5, '{"B":"1"}');
+
+    $this->dbc->deleteResultData(1, 'sample_group');
+
+    $this->assertNull(TestStateBuffer::get(1));
+    $this->assertNull(TestStateBuffer::get(2));
+    $this->assertNotNull(TestStateBuffer::get(3), 'a test of another group keeps its state');
+    $this->assertSame([3], array_keys(TestStateBuffer::pending(10)));
+  }
+
+  function test_deleteResultDataByPersonAndBooklet_dropsTheCachedStatesOfTheDeletedTests(): void {
+    $this->enableTestStateCache(true);
+    TestStateBuffer::push(1, 1, '{"A":"1"}');
+    TestStateBuffer::push(2, 1, '{"A":"2"}');
+
+    $this->dbc->deleteResultDataByPersonAndBooklet(1, [
+      ['loginName' => 'sample_user', 'code' => 'xxx', 'nameSuffix' => 'xxx', 'bookletName' => 'first sample test']
+    ]);
+
+    $this->assertSame(0, (int) ($this->dbc->_('select count(*) as c from tests where id = 1')['c'] ?? -1));
+    $this->assertNull(TestStateBuffer::get(1));
+    $this->assertSame([2], array_keys(TestStateBuffer::pending(10)));
+  }
+
+  public function test_getTestSessions_showsTheBufferedState(): void {
+    $this->enableTestStateCache(true);
+    TestStateBuffer::push(1, 1, '{"CURRENT_UNIT_ID":"UNIT.SAMPLE"}');
+
+    /** @var list<SessionChangeMessage> $sessions */
+    $sessions = $this->dbc->getTestSessions(1, ['sample_group'])->asArray();
+    /** @var array<int, array{testState: array<string, mixed>, unitState: array<string, mixed>}> $sessionsByTest */
+    $sessionsByTest = [];
+    foreach ($sessions as $session) {
+      /** @var array{testId: int, testState: array<string, mixed>, unitState: array<string, mixed>} $asArray */
+      $asArray = $session->jsonSerialize();
+      $sessionsByTest[$asArray['testId']] = $asArray;
+    }
+
+    $this->assertSame(['CURRENT_UNIT_ID' => 'UNIT.SAMPLE', 'status' => 'running'], $sessionsByTest[1]['testState']);
+    $this->assertSame(['PRESENTATIONCOMPLETE' => 'yes'], $sessionsByTest[1]['unitState']);
   }
 
   public function test_getResultStats() {
@@ -443,5 +523,53 @@ final class AdminDAOTest extends TestCase {
 
   private function countTableRows(string $tableName): int {
     return (int) $this->dbc->_("select count(*) as c from $tableName")["c"];
+  }
+
+  public function test_getBookletFiles_readsUnitFilesFromTheActiveStorage(): void {
+    require_once "test/unit/mock-classes/StorageDriverFake.php";
+    $storage = new StorageDriverFake([
+      'ws_1/Resource/unit-a.voud' => '{"def":"a"}',
+      'ws_1/Resource/unit-a.vocs' => '{"scheme":"a"}',
+      'ws_1/Resource/Unit-a.vomd' => '{"meta":"a"}',
+    ]);
+    SystemConfig::$storage_driver = 's3';
+    Storage::setDriver($storage);
+    $this->dbc->_(
+      "insert into files(workspace_id, name, id, label, type, modification_ts, is_valid, size) values
+        (1, 'Unit-a.xml', 'UNIT.A', 'Unit A', 'Unit', '2023-01-16 09:00:00+01:00', true, 1),
+        (1, 'Unit-b.xml', 'UNIT.B', 'Unit B', 'Unit', '2023-01-16 09:00:00+01:00', true, 1)"
+    );
+    $this->dbc->_(
+      "insert into file_relations(workspace_id, subject_name, subject_type, relationship_type, object_type, object_name) values
+        (1, 'Booklet.xml', 'Booklet', 'containsUnit', 'Unit', 'Unit-a.xml'),
+        (1, 'Booklet.xml', 'Booklet', 'containsUnit', 'Unit', 'Unit-b.xml'),
+        (1, 'Unit-a.xml', 'Unit', 'usesPlayer', 'Resource', 'verona-player-simple-6.0.html'),
+        (1, 'Unit-a.xml', 'Unit', 'isDefinedBy', 'Resource', 'unit-a.voud'),
+        (1, 'Unit-a.xml', 'Unit', 'usesScheme', 'Resource', 'unit-a.vocs'),
+        (1, 'Unit-b.xml', 'Unit', 'isDefinedBy', 'Resource', 'unit-b.voud')"
+    );
+
+    ini_set('error_log', '/dev/null'); // the missing unit-b.voud is logged; PHPUnit would take that output as an error
+
+    $result = $this->dbc->getBookletFiles(1, ['BOOKLET.SAMPLE-1']);
+
+    $this->assertEquals(
+      [
+        'name' => 'Unit-a.xml',
+        'label' => 'Unit A',
+        'workspaceId' => 1,
+        'playerVersion' => ['major' => 4, 'minor' => 0, 'patch' => 0],
+        'playerPath' => 'ws_1/verona-player-simple-6.0.html',
+        'unitDefinition' => ['def' => 'a'],
+        'codingScheme' => ['scheme' => 'a'],
+        'metaData' => ['meta' => 'a'],
+      ],
+      $result['UNIT.A']
+    );
+    // a missing definition stays null, as before; no metadata file, no key
+    $this->assertEquals(
+      ['name' => 'Unit-b.xml', 'label' => 'Unit B', 'workspaceId' => 1, 'unitDefinition' => null],
+      $result['UNIT.B']
+    );
   }
 }

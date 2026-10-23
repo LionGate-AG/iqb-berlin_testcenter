@@ -3,7 +3,6 @@
 declare(strict_types=1);
 // TODO unit test
 
-use Slim\Exception\HttpBadRequestException;
 use Slim\Exception\HttpForbiddenException;
 use Slim\Exception\HttpNotFoundException;
 use Slim\Http\ServerRequest as Request;
@@ -13,7 +12,7 @@ use Slim\Routing\RouteContext;
 
 class IsGroupMonitor {
   function __invoke(Request $request, RequestHandler $handler): ResponseInterface {
-    /* @var $authToken AuthToken */
+    /** @var AuthToken $authToken */
     $authToken = $request->getAttribute('AuthToken');
     $routeContext = RouteContext::fromRequest($request);
     $route = $routeContext->getRoute();

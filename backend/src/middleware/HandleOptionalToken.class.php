@@ -7,6 +7,7 @@ use Psr\Http\Server\RequestHandlerInterface as RequestHandler;
 use Slim\Http\ServerRequest as Request;
 
 class HandleOptionalToken {
+  /** @var string[] */
   protected array $requiredTypes = [];
 
   public function __construct(string ...$requiredTypes) {

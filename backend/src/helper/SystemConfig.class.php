@@ -7,13 +7,35 @@ class SystemConfig {
   public static string $database_password;
   public static int $database_port;
   public static string $database_user;
+  public static bool $database_persistentConnections = false;
   public static string $fileServer_url = "";
   public static string $broadcaster_url = "";
   public static string $cacheServer_host = "";
   public static int $cacheServer_port;
   public static string $cacheServer_password = "";
   public static string $cacheServer_includeFiles = "";
+  public static string $storage_driver = 'filesystem';     // 'filesystem' | 's3'
+  public static string $storage_s3Endpoint = '';            // internal endpoint for PUT/GET
+  public static string $storage_s3PublicEndpoint = '';      // browser-facing endpoint for presign
+  public static string $storage_s3Region = 'us-east-1';
+  public static string $storage_s3Bucket = '';
+  public static bool $storage_s3PathStyle = true;
+  public static bool $storage_s3UseSSL = true;
+  public static string $storage_s3AccessKey = '';
+  public static string $storage_s3SecretKey = '';
+  public static int $storage_presignTtl = 3600;
   public static array $bruteForceProtection_sessions = [];
+  public static bool $cache_authToken = false;
+  public static int $cache_authTokenTtl;
+  public static bool $testLogs_async = false;
+  public static int $testLogs_drainBatchSize;
+  public static int $testLogs_drainIdleMs;
+  public static int $testLogs_drainReportSeconds;
+  public static bool $cache_presignedUrls = false;
+  public static bool $testState_buffer = false;
+  public static int $testState_drainIntervalMs;
+  public static int $testState_drainBatchSize;
+  public static int $testState_drainReportSeconds;
   public static string $password_salt = "t";
   public static string $system_version;
   public static int $system_veronaMax;
@@ -82,6 +104,7 @@ class SystemConfig {
     $config['database']['port'] = self::stringEnv('DB_PORT');
     $config['database']['user'] = self::stringEnv('DB_USER');
     $config['database']['password'] = self::stringEnv('DB_PASSWORD');
+    $config['database']['persistentConnections'] = self::boolEnv('DB_PERSISTENT_CONNECTIONS');
 
     $config['password']['salt'] = self::stringEnv('PASSWORD_SALT');
     $config['password']['min_length'] = (int) self::stringEnv('PASSWORD_MIN_LENGTH');
@@ -101,6 +124,35 @@ class SystemConfig {
     $config['cacheServer']['port'] = self::stringEnv('REDIS_PORT');
     $config['cacheServer']['password'] = self::stringEnv('REDIS_PASSWORD');
     $config['cacheServer']['includeFiles'] = self::boolEnv('REDIS_CACHE_FILES');
+
+    $config['cache']['authToken'] = self::boolEnv('TESTCENTER_CACHE_AUTH_TOKEN');
+    $config['cache']['authTokenTtl'] = self::intEnv('TESTCENTER_AUTH_TOKEN_TTL', 300);
+    $config['cache']['presignedUrls'] = self::boolEnv('TESTCENTER_CACHE_PRESIGNED_URLS');
+
+    $config['storage']['driver'] = self::stringEnv('STORAGE_DRIVER', 'filesystem');
+    if ($config['storage']['driver'] === 's3') {
+      $config['storage']['s3Endpoint'] = self::stringEnv('S3_ENDPOINT', '');
+      $config['storage']['s3PublicEndpoint'] = self::stringEnv('S3_PUBLIC_ENDPOINT', '');
+      $config['storage']['s3Region'] = self::stringEnv('S3_REGION', 'us-east-1');
+      $config['storage']['s3Bucket'] = self::stringEnv('S3_BUCKET', '');
+      $config['storage']['s3PathStyle'] = self::boolEnv('S3_USE_PATH_STYLE');
+      $config['storage']['s3UseSSL'] = self::boolEnv('S3_USE_SSL');
+      $config['storage']['s3AccessKey'] = self::stringEnv('S3_ACCESS_KEY', '');
+      $config['storage']['s3SecretKey'] = self::stringEnv('S3_SECRET_KEY', '');
+      $config['storage']['presignTtl'] = self::intEnv('S3_PRESIGN_TTL', 3600);
+    }
+
+    $config['testLogs']['async'] = self::boolEnv('TESTCENTER_ASYNC_TEST_LOGS');
+    // settings of the drainer (backend/drain-logs.php)
+    $config['testLogs']['drainBatchSize'] = self::intEnv('LOG_DRAIN_BATCH', 5000);
+    $config['testLogs']['drainIdleMs'] = self::intEnv('LOG_DRAIN_IDLE_MS', 200);
+    $config['testLogs']['drainReportSeconds'] = self::intEnv('LOG_DRAIN_REPORT_SEC', 30);
+
+    $config['testState']['buffer'] = self::boolEnv('TESTCENTER_BUFFER_TEST_STATE');
+    // settings of the drainer (backend/drain-test-states.php)
+    $config['testState']['drainIntervalMs'] = self::intEnv('STATE_DRAIN_INTERVAL_MS', 2000);
+    $config['testState']['drainBatchSize'] = self::intEnv('STATE_DRAIN_BATCH', 500);
+    $config['testState']['drainReportSeconds'] = self::intEnv('STATE_DRAIN_REPORT_SEC', 30);
 
     $sessions = self::stringEnv('BRUTE_FORCE_PROTECTION');
     $config['bruteForceProtection']['sessions'] = $sessions;
@@ -146,8 +198,28 @@ class SystemConfig {
     return in_array(strtolower($value), ['on', 'true', 'yes', 1]);
   }
 
-  private static function stringEnv(string $name): string {
+  /**
+   * @throws Exception if the variable is set but is not a non-negative integer
+   */
+  private static function intEnv(string $name, int $default): int {
     $value = getEnv($name);
+    if ($value === false or trim($value) === '') {
+      return $default;
+    }
+    if (!ctype_digit(trim($value))) {
+      throw new Exception("Environment-variable `$name` must be a non-negative integer, got `$value`.");
+    }
+    return (int) trim($value);
+  }
+
+  /**
+   * @param string|null $default returned when the variable is unset or empty
+   */
+  private static function stringEnv(string $name, ?string $default = null): string {
+    $value = getEnv($name);
+    if (($default !== null) and (($value === false) or ($value === ''))) {
+      return $default;
+    }
     if (!isset($value)) {
         throw new Exception("Environment-variable missing: `$name`.");
     }

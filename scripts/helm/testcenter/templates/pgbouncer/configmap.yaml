@@ -1,0 +1,46 @@
+{{- if .Values.config.pgbouncer.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-pgbouncer-config
+data:
+  pgbouncer.ini: |
+    [databases]
+    {{ .Values.config.db.database }} = host={{ .Release.Name }}-db port=5432 dbname={{ .Values.config.db.database }}
+
+    [pgbouncer]
+    listen_addr = 0.0.0.0
+    listen_port = 5432
+    unix_socket_dir =
+    auth_type = scram-sha-256
+    auth_file = /etc/pgbouncer/userlist.txt
+
+    # A server connection is held only for the duration of one transaction. This requires clients without session
+    # state (no SET, temporary tables, advisory locks or named prepared statements across transactions); the backend
+    # fulfils that and connects with PDO::PGSQL_ATTR_DISABLE_PREPARES.
+    pool_mode = transaction
+    # Protocol-level prepared statements PgBouncer tracks per server connection, for clients that use them.
+    max_prepared_statements = {{ .Values.config.pgbouncer.maxPreparedStatements }}
+
+    # client side, per PgBouncer pod
+    max_client_conn = {{ .Values.config.pgbouncer.maxClientConn }}
+    # server side, per PgBouncer pod
+    default_pool_size = {{ .Values.config.pgbouncer.defaultPoolSize }}
+    min_pool_size = {{ .Values.config.pgbouncer.minPoolSize }}
+    reserve_pool_size = {{ .Values.config.pgbouncer.reservePoolSize }}
+    reserve_pool_timeout = 3
+    max_db_connections = {{ .Values.config.pgbouncer.maxDbConnections }}
+
+    # A waiting client is a blocked backend worker: fail after this many seconds instead of queueing.
+    query_wait_timeout = {{ .Values.config.pgbouncer.queryWaitTimeout }}
+    server_idle_timeout = 600
+
+    # Sent by some drivers on connect; PgBouncer would otherwise refuse the client.
+    ignore_startup_parameters = extra_float_digits,options
+
+    # Persistent backend connections come and go with the worker processes; logging each would flood the log.
+    log_connections = 0
+    log_disconnections = 0
+    log_pooler_errors = 1
+    stats_period = 60
+{{- end }}

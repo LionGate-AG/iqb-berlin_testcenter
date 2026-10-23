@@ -92,8 +92,8 @@ class ResourceFile extends File {
 
   private function getPlayerMetaElementV3(DOMDocument $document): ?DOMElement {
     $metaElements = $document->getElementsByTagName('meta');
+    /** @var DOMElement $metaElement */
     foreach ($metaElements as $metaElement) {
-      /* @var $metaElement DOMElement */
       if ($metaElement->getAttribute('name') == 'application-name') {
         return $metaElement;
       }
@@ -103,11 +103,11 @@ class ResourceFile extends File {
 
   private function getPlayerTitleV3(DOMDocument $document): string {
     $titleElements = $document->getElementsByTagName('title');
-    if (!count($titleElements)) {
+    if (!$titleElements->count()) {
       return '';
     }
-    $titleElement = $titleElements[0];
-    /* @var $titleElement DOMElement */
+    /** @var DOMElement $titleElement */
+    $titleElement = $titleElements->item(0);
     return $titleElement->textContent;
   }
 
@@ -205,8 +205,8 @@ class ResourceFile extends File {
 
   private function getPlayerMetaElementV4(DOMDocument $document): ?DOMElement {
     $metaElements = $document->getElementsByTagName('script');
+    /** @var DOMElement $metaElement */
     foreach ($metaElements as $metaElement) {
-      /* @var $metaElement DOMElement */
       if ($metaElement->getAttribute('type') == 'application/ld+json') {
         return $metaElement;
       }
@@ -262,6 +262,11 @@ class ResourceFile extends File {
       return;
     }
 
+    if (Storage::isObjectStore()) {
+      $this->installPackageToObjectStore($contentsDirName);
+      return;
+    }
+
     try {
       ZIP::extract($this->getPath(), $contentsDirName);
 
@@ -271,8 +276,44 @@ class ResourceFile extends File {
     }
   }
 
+  // The package archive lives in the bucket, so fetch it to a scratch dir,
+  // extract there, then upload each extracted file under the package prefix.
+  private function installPackageToObjectStore(string $contentsDirName): void {
+    $logicalZip = Storage::toLogical($this->getPath());
+    $logicalBase = Storage::toLogical($contentsDirName);
+    $tmpZip = tempnam(sys_get_temp_dir(), 'itcr');
+
+    try {
+      file_put_contents($tmpZip, Storage::driver()->get($logicalZip));
+      ZIP::extract($tmpZip, $contentsDirName);
+
+      foreach (Folder::getContentsFlat($contentsDirName) as $relativePath) {
+        Storage::driver()->put("$logicalBase/$relativePath", "$contentsDirName/$relativePath");
+      }
+
+    } catch (Exception $e) {
+      $this->report('error', "Could not extract package: {$e->getMessage()}");
+
+    } finally {
+      if (file_exists($tmpZip)) {
+        unlink($tmpZip);
+      }
+      if (is_dir($contentsDirName)) {
+        Folder::deleteContentsRecursive($contentsDirName);
+        rmdir($contentsDirName);
+      }
+    }
+  }
+
   public function uninstallPackage(): void {
     $contentsDirName = $this->getPackageContentPath();
+
+    if (Storage::isObjectStore() and ($logicalBase = Storage::toLogical($contentsDirName)) !== null) {
+      foreach (Storage::driver()->list(rtrim($logicalBase, '/') . '/') as $key) {
+        Storage::driver()->delete($key);
+      }
+    }
+
     if (file_exists($contentsDirName)) {
       if (is_dir($contentsDirName)) {
         Folder::deleteContentsRecursive($contentsDirName);

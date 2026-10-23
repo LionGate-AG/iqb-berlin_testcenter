@@ -100,7 +100,8 @@ class Workspace {
 
   /**
    * The only sanctioned way to turn request input (type, file name) into a workspace
-   * file path. Returns null if the type is unknown or the path escapes its sub-folder.
+   * file path. Returns null if the type is unknown, the path escapes its sub-folder or
+   * the file does not exist. Filesystem storage only; see getFileKey() for the object store.
    */
   public function getFilePath(string $type, string $fileName): ?string {
     if (!in_array($type, self::subFolders)) {
@@ -110,6 +111,31 @@ class Workspace {
     $path = Folder::getContainedRealPath($this->workspacePath . '/' . $type, $fileName);
 
     return ($path !== null and is_file($path)) ? $path : null;
+  }
+
+  /**
+   * The object-store counterpart of getFilePath(): the storage key for request input (type,
+   * file name), or null if the type is unknown or the name could leave its sub-folder.
+   *
+   * Object keys are plain strings without a realpath() to resolve `..`, so such names are
+   * rejected instead. The check involves no I/O and can run before any cache lookup;
+   * whether the object exists is the caller's concern.
+   */
+  public function getFileKey(string $type, string $fileName): ?string {
+    if (!in_array($type, self::subFolders)) {
+      return null;
+    }
+
+    // a backslash could be read as a separator by a proxy or store along the way
+    if (str_contains($fileName, '\\') or str_contains($fileName, "\0")) {
+      return null;
+    }
+    // an empty segment also stands for a leading, trailing or doubled `/`
+    if (array_intersect(explode('/', $fileName), ['', '.', '..'])) {
+      return null;
+    }
+
+    return Storage::toLogical($this->workspacePath . '/' . $type . '/' . $fileName);
   }
 
   public function deleteFiles(array $filesToDelete): FileDeletionReport {
@@ -148,10 +174,26 @@ class Workspace {
 
     $this->workspaceDAO->updateContentTypeBasedOnRemainingTesttakers();
 
+    if ($deletionReport->deleted) {
+      CacheService::flushPresignedUrls();
+    }
+
     return $deletionReport;
   }
 
   protected function deleteFileFromFs(string $fullPath): string {
+    if (Storage::isObjectStore()) {
+      $logical = Storage::toLogical($fullPath);
+      if ($logical === null or !Storage::driver()->exists($logical)) {
+        return 'did_not_exist';
+      }
+      if (!$this->isPathLegal($fullPath)) {
+        return 'not_allowed';
+      }
+      Storage::driver()->delete($logical);
+      return 'deleted';
+    }
+
     if (!file_exists($fullPath)) {
       return 'did_not_exist';
     }
@@ -281,9 +323,10 @@ class Workspace {
   }
 
   protected function categorizeFile(string $localFilePath, File $file): bool {
+    $isObjectStore = Storage::isObjectStore();
     $targetFolder = $this->workspacePath . '/' . $file->getType();
 
-    if (!file_exists($targetFolder)) {
+    if (!$isObjectStore and !file_exists($targetFolder)) {
       if (!mkdir($targetFolder)) {
         $file->report('error', "Could not create folder: `$targetFolder`.");
         return false;
@@ -291,8 +334,13 @@ class Workspace {
     }
 
     $targetFilePath = $targetFolder . '/' . basename($localFilePath);
+    $logicalTarget = "ws_$this->workspaceId/{$file->getType()}/" . basename($localFilePath);
 
-    if (file_exists($targetFilePath)) {
+    $targetExists = $isObjectStore
+      ? Storage::driver()->exists($logicalTarget)
+      : file_exists($targetFilePath);
+
+    if ($targetExists) {
       $oldFile = File::get($targetFilePath, $file->getType());
 
       if ($oldFile->getId() !== $file->getId()) {
@@ -324,7 +372,9 @@ class Workspace {
         return false;
       }
 
-      if (!unlink($targetFilePath)) {
+      if ($isObjectStore) {
+        Storage::driver()->delete($logicalTarget);
+      } else if (!unlink($targetFilePath)) {
         $file->report('error', "Could not delete file: `$targetFolder/$localFilePath`");
         return false;
       }
@@ -332,7 +382,16 @@ class Workspace {
       $file->report('warning', "File of name `{$oldFile->getName()}` did already exist and was overwritten.");
     }
 
-    if (!rename($this->workspacePath . '/' . $localFilePath, $targetFilePath)) {
+    $sourcePath = $this->workspacePath . '/' . $localFilePath;
+
+    if ($isObjectStore) {
+      try {
+        Storage::driver()->put($logicalTarget, $sourcePath);
+      } catch (Exception $e) {
+        $file->report('error', "Could not store file `$logicalTarget`: {$e->getMessage()}");
+        return false;
+      }
+    } else if (!rename($sourcePath, $targetFilePath)) {
       $file->report('error', "Could not move file to `$targetFolder/$localFilePath`");
       return false;
     }
@@ -415,6 +474,11 @@ class Workspace {
   }
 
   public function delete(): void {
+    if (Storage::isObjectStore()) {
+      foreach (Storage::driver()->list("ws_$this->workspaceId/") as $key) {
+        Storage::driver()->delete($key);
+      }
+    }
     Folder::deleteContentsRecursive($this->workspacePath);
     rmdir($this->workspacePath);
   }
@@ -465,9 +529,8 @@ class Workspace {
 
     $reports = [];
 
+    /** @var File $file */
     foreach ($workspaceCache->getFiles(true) as $file) {
-      /* @var File $file */
-
       if (!$file->isValid()) {
         $invalidCount++;
         $reports[$file->getType() . '/' . $file->getId()] = $file->getValidationReport()['error'];
@@ -519,8 +582,8 @@ class Workspace {
     $deletedLogins = 0;
 
     foreach ($filesInDb as $fileSet) {
+      /** @var File $file */
       foreach ($fileSet as $file) {
-        /* @var File $file */
 
         if (!isset($filesInFolder[$file->getPath()])) {
           $this->workspaceDAO->deleteFile($file);
@@ -580,8 +643,8 @@ class Workspace {
 
     $requestedAttachments = [];
     foreach ($booklet->getUnitIds() as $uniId) {
+      /** @var XMLFileUnit $unit */
       $unit = $workspaceCache?->getUnit($uniId) ?? $this->getFileById('Unit', $uniId);
-      /* @var $unit XMLFileUnit */
       $requestedAttachments = array_merge($requestedAttachments, $unit->getRequestedAttachments());
     }
     return $requestedAttachments;
@@ -616,7 +679,22 @@ class Workspace {
   }
 
   public function getWorkspaceHash(): string {
+    if (Storage::isObjectStore()) {
+      return hash('XXH3', serialize($this->getObjectStoreFileHashes()));
+    }
     return hash('XXH3', serialize(self::getHashOfAllFiles($this->getWorkspacePath())));
+  }
+
+  private function getObjectStoreFileHashes(): array {
+    $result = [];
+    foreach (Storage::driver()->list("ws_$this->workspaceId/") as $key) {
+      $result[] = [
+        'filename' => basename($key),
+        'filemtime' => Storage::driver()->mtime($key),
+        'filesize' => Storage::driver()->size($key)
+      ];
+    }
+    return $result;
   }
 
   public function setWorkspaceHash(): void {

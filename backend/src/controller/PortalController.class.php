@@ -26,7 +26,10 @@ class PortalController extends Controller {
   /**
    * GET /workspace/{ws_id}/player-resource/{path} - what the portal's replay (Korrektur) loads into its iframes:
    * a Verona player of the workspace (by file name) or a file below Resource/GeoGebra/. Nothing else of the
-   * workspace is reachable here. Deliberately not `new Workspace()`, which would create a missing workspace folder.
+   * workspace is reachable here. Read from the active storage (disk or object store). The path check works on the
+   * string, as an object store has no realpath; on disk the resolved path must also stay inside its folder, so a
+   * symlink cannot lead out of it.
+   * Deliberately not `new Workspace()`, which would create a missing workspace folder.
    */
   public static function getPlayerResource(Request $request, Response $response, array $args): Response {
     $workspaceId = (int) $request->getAttribute('ws_id');
@@ -36,23 +39,38 @@ class PortalController extends Controller {
       && !str_contains($path, "\0")
       && !array_intersect($segments, ['', '.', '..']);
 
-    $filePath = null;
+    $logicalPath = null;
     if ($workspaceId > 0 && $isPlainRelativePath) {
-      $resourceDir = DATA_DIR . "/ws_$workspaceId/Resource";
-      if ($segments[0] === self::GEOGEBRA_FOLDER && count($segments) > 1) {
-        $filePath = Folder::getContainedRealPath("$resourceDir/" . self::GEOGEBRA_FOLDER, implode('/', array_slice($segments, 1)));
-      } elseif (count($segments) === 1 && self::portalDAO()->isPlayer($workspaceId, $path)) {
-        $filePath = Folder::getContainedRealPath($resourceDir, $path);
+      $isGeoGebraFile = $segments[0] === self::GEOGEBRA_FOLDER && count($segments) > 1;
+      $isPlayer = count($segments) === 1 && self::portalDAO()->isPlayer($workspaceId, $path);
+      $folder = $isGeoGebraFile ? 'Resource/' . self::GEOGEBRA_FOLDER : 'Resource';
+      if (($isGeoGebraFile || $isPlayer) && self::isContainedOnDisk("ws_$workspaceId/$folder", "ws_$workspaceId/Resource/$path")) {
+        $logicalPath = "ws_$workspaceId/Resource/$path";
       }
     }
 
-    if ($filePath === null || !is_file($filePath)) {
+    if ($logicalPath === null || !Storage::driver()->exists($logicalPath)) {
       throw new HttpNotFoundException($request, 'No player resource `' . htmlspecialchars($path) . "` in workspace $workspaceId");
     }
 
     // Players and GeoGebra files are versioned by name; the browser may reuse them across the replay's iframes.
-    return FileResponse::stream($response, $filePath)
+    return FileResponse::streamResource(
+      $response,
+      Storage::driver()->getStream($logicalPath),
+      null,
+      FileExt::getMimeType($path),
+      Storage::driver()->size($logicalPath)
+    )
       ->withHeader('Cache-Control', 'private, max-age=3600');
+  }
+
+  /** Disk only: whether $logicalPath, symlinks resolved, lies below $logicalFolder. The object store has no symlinks. */
+  private static function isContainedOnDisk(string $logicalFolder, string $logicalPath): bool {
+    if (Storage::isObjectStore()) {
+      return true;
+    }
+    $relativePath = substr($logicalPath, strlen($logicalFolder) + 1);
+    return Folder::getContainedRealPath(DATA_DIR . "/$logicalFolder", $relativePath) !== null;
   }
 
   public static function getTestBookletIds(Request $request, Response $response): Response {

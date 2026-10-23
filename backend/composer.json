@@ -1,4 +1,5 @@
 {
+  "_comment": "Mago (static analysis) is not installed via Composer but pinned in backend/Dockerfile. Update it there along with the dependencies.",
   "name": "iqb/testcenter-backend",
   "description": "IQB-Testcenter (Backend)",
   "homepage": "https://iqb-testcenter.de",
@@ -15,7 +16,6 @@
     "slim/psr7": "1.7.1",
     "slim/slim": "4.15.0",
     "tecnickcom/tcpdf": "6.10.0",
-    "ext-apache": "*",
     "ext-curl": "*",
     "ext-dom": "*",
     "ext-json": "*",
@@ -29,11 +29,11 @@
     "ext-zip": "*",
     "ext-zend-opcache" : "*",
     "ext-ctype": "*",
+    "aws/aws-sdk-php": "3.385.0",
     "altcha-org/altcha": "^1.3"
   },
   "require-dev": {
     "amphp/parallel": "2.3.2",
-    "carthage-software/mago": "^1.42.0",
     "mikey179/vfsstream": "1.6.12",
     "phpunit/phpunit":  "10.4.2",
     "mockery/mockery": "1.6.12",
@@ -44,5 +44,10 @@
   },
   "autoload-dev": {
     "classmap": ["test/unit/test-helper"]
+  },
+  "config": {
+    "platform": {
+      "php": "8.3.36"
+    }
   }
 }
