@@ -1,0 +1,210 @@
+name: CI/CD (dev)
+
+# Runs on every push to dev (a merged pull request is a push). Builds the four testcenter images with a
+# dev-<sha> tag, writes that tag into fwu-infrastruktur (tba-portal-scalable/values-dev.yaml) so ArgoCD
+# deploys it to tc-dev, and keeps the 2 newest dev-* versions per package.
+# The portal images (and orphan cleanup) are handled by the dev pipeline of iqb-berlin_tba-portal_BY.
+on:
+  push:
+    branches: [dev]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: ghcr.io/liongate-ag
+  # GitOps repository and file ArgoCD reads for the dev environment (application tba-portal-scalable).
+  INFRA_REPO: LionGate-AG/fwu-infrastruktur
+  INFRA_REF: main
+  INFRA_VALUES: tba-portal-scalable/values-dev.yaml
+
+jobs:
+  # ── Compute a single tag shared across all build jobs ──────────────────────
+  prepare:
+    name: Prepare
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - name: Compute image tag
+        id: tag
+        # Same scheme as the portal pipeline. The sha is that of the testcenter commit, so it also names the
+        # testcenter version in the images.
+        run: echo "tag=dev-${GITHUB_SHA:0:7}" >> "$GITHUB_OUTPUT"
+
+  # ── Build & push the testcenter images (the images the tba-portal-scalable chart runs) ──────────────────
+  build:
+    name: Build & push ${{ matrix.image }}
+    needs: [prepare]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: tc-frontend
+            dockerfile: frontend/Dockerfile
+            target: prod
+            build-args: ""
+
+          # Debian image with bash, /initialize_only.sh and the code in /var/www/testcenter/backend
+          - image: tc-backend
+            dockerfile: backend/Dockerfile
+            target: prod
+            build-args: PHP_VERSION=8.3.36-fpm-bookworm
+
+          - image: tc-broadcaster
+            dockerfile: broadcaster/Dockerfile
+            target: prod
+            build-args: ""
+
+          - image: tc-file-server
+            dockerfile: file-server/Dockerfile
+            target: ""
+            build-args: ""
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # frontend/src/environments/environment.ts is git-ignored but imported by the UI; the production build
+      # replaces its content with environment.prod.ts, so it only has to exist (as scripts/ci/frontend.yml does).
+      - name: Create the environment file
+        run: cp frontend/src/environments/environment.dev.ts frontend/src/environments/environment.ts
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.NPM_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          target: ${{ matrix.target }}
+          build-args: ${{ matrix.build-args }}
+          platforms: linux/amd64
+          push: true
+          # Disable provenance/SBOM so the tag points to a single image manifest
+          # (no index + orphan child manifests, which break the cleanup job).
+          provenance: false
+          sbom: false
+          tags: ${{ env.IMAGE_PREFIX }}/${{ matrix.image }}:${{ needs.prepare.outputs.tag }}
+          cache-from: type=gha,scope=dev-${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=dev-${{ matrix.image }}
+
+  # ── Write the new tag into values-dev.yaml in fwu-infrastruktur → ArgoCD auto-sync deploys it ─────────────
+  update-infra-values:
+    name: Update testcenter image tags (fwu-infrastruktur)
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout fwu-infrastruktur
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.INFRA_REPO }}
+          ref: ${{ env.INFRA_REF }}
+          token: ${{ secrets.NPM_TOKEN }}
+
+      - name: Swap testcenter image tags in values-dev.yaml
+        # Only image.<name>.tag of the four testcenter images; the portal images stay as they are.
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          # image.<name>.repository / image.<name>.tag: the tag is the line after the repository line
+          for img in tc-backend tc-broadcaster tc-frontend tc-file-server; do
+            sed -i -E "/repository: \"ghcr\.io\/liongate-ag\/${img}\"/{n;s|(tag: \")[^\"]*(\")|\1${TAG}\2|}" "$INFRA_VALUES"
+          done
+
+          # Fail instead of silently deploying nothing when a pattern no longer matches the file layout
+          count=$(grep -c -F "${TAG}" "$INFRA_VALUES" || true)
+          if [ "$count" -ne 4 ]; then
+            echo "::error::Expected 4 image references with tag ${TAG} in ${INFRA_VALUES}, found ${count}"
+            git diff
+            exit 1
+          fi
+
+      - name: Commit and push
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "$INFRA_VALUES"
+          # Only commit if the file actually changed
+          git diff --staged --quiet && exit 0
+          git commit -m "ci: bump tba-portal-scalable testcenter image tags to ${TAG}"
+          # Another push to the infra repo (e.g. by the portal pipeline) may have landed since the checkout
+          for _ in 1 2 3; do
+            git push && exit 0
+            git pull --rebase origin "$INFRA_REF"
+          done
+          exit 1
+
+  # ── Clean up old GHCR versions (keep 2 most recent dev-* per package) ────
+  cleanup-old-images:
+    name: Cleanup ${{ matrix.package }}
+    needs: [prepare, update-infra-values]
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        package:
+          - tc-frontend
+          - tc-backend
+          - tc-broadcaster
+          - tc-file-server
+    steps:
+      - name: Cleanup old versions (only dev-* versions, keep 2 newest + the one just built)
+        env:
+          GH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          OWNER: liongate-ag
+          PACKAGE: ${{ matrix.package }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          # jq -s 'add' merges the pages into one array, whether gh prints one array or one per page
+          versions=$(gh api --paginate \
+            "/orgs/${OWNER}/packages/container/${PACKAGE}/versions?per_page=100" | jq -s 'add')
+
+          # Only versions whose tags ALL start with 'dev-' are ever candidates for deletion. Anything else
+          # (untagged, 'sha-*', 'scalable', ...) is never touched, and a version
+          # that carries both a dev-* tag and any other tag is protected as well (identical content is
+          # deduplicated by GHCR, so this can happen).
+          #
+          # Of the candidates, these are kept:
+          #   - the 2 most-recently-created versions
+          #   - the version carrying the tag built in this run ($TAG). GHCR attaches a new tag
+          #     to an existing version when the content is identical, and created_at stays at
+          #     the first push, so that version can rank outside the newest 2 even though it
+          #     is exactly what ArgoCD is about to deploy.
+          delete_ids=$(echo "$versions" | jq -r --arg cur "$TAG" '
+            def tags: .metadata.container.tags // [];
+            [.[] | select(tags | (length > 0) and all(startswith("dev-")))] as $dev
+            | ($dev | sort_by(.created_at) | reverse | .[0:2] | map(.id)) as $newest
+            | $dev[]
+            | select((.id | IN($newest[])) | not)
+            | select((tags | index($cur)) | not)
+            | .id
+          ')
+
+          for id in $delete_ids; do
+            tags=$(echo "$versions" | jq -r ".[] | select(.id == $id) | (.metadata.container.tags // []) | join(\",\")")
+            echo "Deleting version $id (tags: $tags)"
+            gh api -X DELETE "/orgs/${OWNER}/packages/container/${PACKAGE}/versions/$id"
+          done
