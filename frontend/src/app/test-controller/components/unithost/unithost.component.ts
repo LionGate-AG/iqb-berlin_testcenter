@@ -396,7 +396,10 @@ export class UnithostComponent implements OnInit, OnDestroy {
     }
     this.iFrameItemplayer.setAttribute('class', 'unitHost');
     this.iFrameHostElement.nativeElement.appendChild(this.iFrameItemplayer);
-    this.iFrameItemplayer.setAttribute('srcdoc', this.tcs.getPlayer(this.tcs.currentUnit.playerFileName));
+    this.iFrameItemplayer.setAttribute(
+      'srcdoc',
+      this.themeService.applyToPlayer(this.tcs.getPlayer(this.tcs.currentUnit.playerFileName))
+    );
   }
 
   private reload(): void {

@@ -1,3 +1,4 @@
+@use 'sass:string';
 @use './material-overrides' as material-overrides;
 
 @mixin base-colors {
@@ -34,4 +35,73 @@
 
   @include base-colors;
   @include material-overrides.overrides;
+}
+
+// NRW design system: Nachtblau (portal-blue-950) as primary, portal-blue-100 as secondary,
+// Open Sans, and 20px icons (24px stays possible for components that set their own size).
+$nrw-font: string.unquote("'Open Sans', ui-sans-serif, system-ui, sans-serif");
+$nrw-button-blue: #2769B7;
+$nrw-on-button: #FFF;
+$nrw-on-button-layer: color-mix(in srgb, #FFF 12%, transparent);
+$nrw-button-blue-layer: color-mix(in srgb, #2769B7 12%, transparent);
+
+.theme-nrw {
+  --mat-sys-primary: #031A38;
+  --mat-sys-secondary: #DFEDFF;
+  --tc-button-bg: #{$nrw-button-blue};
+
+  --mat-button-filled-container-color: #{$nrw-button-blue};
+
+  --mat-button-protected-container-color: #{$nrw-button-blue};
+  --mat-button-protected-label-text-color: #{$nrw-on-button};
+  --mat-button-protected-state-layer-color: #{$nrw-on-button};
+  --mat-button-protected-ripple-color: #{$nrw-on-button-layer};
+
+  --mat-fab-container-color: #{$nrw-button-blue};
+  --mat-fab-foreground-color: #{$nrw-on-button};
+  --mat-fab-state-layer-color: #{$nrw-on-button};
+  --mat-fab-ripple-color: #{$nrw-on-button-layer};
+  --mat-fab-small-container-color: #{$nrw-button-blue};
+  --mat-fab-small-foreground-color: #{$nrw-on-button};
+  --mat-fab-small-state-layer-color: #{$nrw-on-button};
+  --mat-fab-small-ripple-color: #{$nrw-on-button-layer};
+
+  --mat-button-text-label-text-color: #{$nrw-button-blue};
+  --mat-button-text-state-layer-color: #{$nrw-button-blue};
+  --mat-button-text-ripple-color: #{$nrw-button-blue-layer};
+
+  @each $role in (display, headline, title, body, label) {
+    @each $size in (large, medium, small) {
+      --mat-sys-#{$role}-#{$size}-font: #{$nrw-font};
+    }
+  }
+
+  font-family: $nrw-font;
+
+  @include base-colors;
+  @include material-overrides.overrides;
+
+  .mat-icon {
+    width: 20px;
+    height: 20px;
+  }
+
+  // Tonal buttons (Abmelden, Adminbereich, Systemverwaltung, ...) look like the filled ones. The unit navigation
+  // buttons keep their own white background (test-controller.component.css), so a white label would vanish there.
+  .mat-tonal-button:not(.nav-button) {
+    --mat-button-tonal-container-color: #{$nrw-button-blue};
+    --mat-button-tonal-label-text-color: #FFF;
+    --mat-button-tonal-state-layer-color: #FFF;
+    --mat-button-tonal-ripple-color: color-mix(in srgb, #FFF 12%, transparent);
+    border-color: $nrw-button-blue;
+  }
+
+  // Outlined and stroked buttons (e.g. "Abmelden" / "Hier bleiben" in the logout dialog) are solid blue as well.
+  .mat-mdc-outlined-button:not(.mat-mdc-button-disabled) {
+    --mat-button-outlined-label-text-color: #{$nrw-on-button};
+    --mat-button-outlined-outline-color: #{$nrw-button-blue};
+    --mat-button-outlined-state-layer-color: #{$nrw-on-button};
+    --mat-button-outlined-ripple-color: #{$nrw-on-button-layer};
+    background-color: $nrw-button-blue;
+  }
 }

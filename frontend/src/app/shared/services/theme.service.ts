@@ -1,6 +1,7 @@
 import { Injectable } from '@angular/core';
 import { AppError } from '../../app.interfaces';
 import type { AssetSlotName } from './asset.service';
+import { nrwPlayerStyles } from './nrw-player-styles';
 
 @Injectable({
   providedIn: 'root'
@@ -26,6 +27,15 @@ export class ThemeService {
     this.activeTheme = newTheme;
     document.body.className = this.activeTheme.cssClassName;
   }
+
+  /**
+   * Players run in their own document (iframe srcdoc), so the theme classes on the host body don't reach them.
+   * Themes that bring player styles get them appended to the player's html (after the player's own styles).
+   */
+  applyToPlayer(playerHtml: string): string {
+    const css = this.activeTheme.playerStyles?.(document.baseURI);
+    return css ? `${playerHtml}<style id="tc-theme">${css}</style>` : playerHtml;
+  }
 }
 
 export interface Theme {
@@ -35,6 +45,7 @@ export interface Theme {
   description?: string;
   targetAudience: 'children' | 'teenager' | 'adults';
   imagePaths?: Partial<Record<AssetSlotName, string>>;
+  playerStyles?: (baseUri: string) => string;
 }
 
 export const THEMES: Theme[] = [
@@ -61,5 +72,13 @@ export const THEMES: Theme[] = [
     previewColor: '#6B369A',
     description: 'Zielgruppe Erwachsenen (z. B. Lehrkräfte)',
     targetAudience: 'adults'
+  },
+  {
+    name: 'NRW',
+    cssClassName: 'theme-nrw',
+    previewColor: '#031A38',
+    description: 'Design System NRW',
+    targetAudience: 'children',
+    playerStyles: nrwPlayerStyles
   }
 ];
