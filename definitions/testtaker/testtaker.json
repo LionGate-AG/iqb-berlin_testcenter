@@ -194,7 +194,8 @@
               "enum": [
                 "Primar",
                 "Sekundar",
-                "Erwachsene"
+                "Erwachsene",
+                "NRW"
               ]
             },
             "codeInput": {

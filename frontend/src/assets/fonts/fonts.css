@@ -33,3 +33,48 @@
   font-weight: 700;
   src: url('./nunitosans/nunito-sans-v19-latin-700italic.woff2') format('woff2');
 }
+
+/* open-sans-400 - latin (NRW theme) */
+@font-face {
+  font-display: swap;
+  font-family: 'Open Sans';
+  font-style: normal;
+  font-weight: 400;
+  src: url('./opensans/open-sans-latin-400-normal.woff2') format('woff2');
+}
+
+/* open-sans-400italic - latin */
+@font-face {
+  font-display: swap;
+  font-family: 'Open Sans';
+  font-style: italic;
+  font-weight: 400;
+  src: url('./opensans/open-sans-latin-400-italic.woff2') format('woff2');
+}
+
+/* open-sans-600 - latin */
+@font-face {
+  font-display: swap;
+  font-family: 'Open Sans';
+  font-style: normal;
+  font-weight: 600;
+  src: url('./opensans/open-sans-latin-600-normal.woff2') format('woff2');
+}
+
+/* open-sans-700 - latin */
+@font-face {
+  font-display: swap;
+  font-family: 'Open Sans';
+  font-style: normal;
+  font-weight: 700;
+  src: url('./opensans/open-sans-latin-700-normal.woff2') format('woff2');
+}
+
+/* open-sans-700italic - latin */
+@font-face {
+  font-display: swap;
+  font-family: 'Open Sans';
+  font-style: italic;
+  font-weight: 700;
+  src: url('./opensans/open-sans-latin-700-italic.woff2') format('woff2');
+}

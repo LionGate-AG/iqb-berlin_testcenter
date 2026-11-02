@@ -29,7 +29,7 @@
       background-color: var(--mat-sys-secondary);
 
       &.filled {
-        background-color: var(--mat-sys-primary);
+        background-color: var(--tc-button-bg, var(--mat-sys-primary));
       }
 
       &.active {
@@ -57,7 +57,7 @@
 
 button.mat-mdc-fab {
   box-shadow: none;
-  background-color: var(--mat-sys-primary);
+  background-color: var(--tc-button-bg, var(--mat-sys-primary));
   color: var(--mat-sys-on-primary);
   width: var(--button-diameter);
   height: var(--button-diameter);
