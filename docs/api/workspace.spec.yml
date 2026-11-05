@@ -2030,6 +2030,97 @@ paths:
               schema:
                 $ref: './components.spec.yml#/components/schemas/error'
 
+  /workspace/{ws_id}/testtakers/{filename}:
+    put:
+      summary: upload or replace a Testtakers file
+      description: >
+        Writes the request body as Testtakers file `{filename}` into the workspace and imports it,
+        replacing a file of the same name. Used by external systems (e.g. the TBA-Portal) that
+        manage the logins of their testees themselves; no admin session is needed.
+      tags:
+        - portal integration
+      parameters:
+        - in: header
+          name: Authorization
+          description: >
+            static bearer token, configured via the `TESTTAKER_TOKEN` environment variable
+            (not a session AuthToken as used elsewhere in this API)
+          example: "Bearer Ship4ae2aesai3quasuu"
+          required: true
+        - in: path
+          name: ws_id
+          description: workspace-id
+          example: 1
+          required: true
+          schema:
+            type: integer
+        - in: path
+          name: filename
+          description: name of the Testtakers file, must match `^[A-Za-z0-9._-]+\.xml$`
+          example: "541.xml"
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/xml:
+            schema:
+              type: string
+            example: "<?xml version=\"1.0\" encoding=\"utf-8\"?><Testtakers>...</Testtakers>"
+      responses:
+        "201":
+          description: file was created and imported
+        "204":
+          description: file of the same name existed and was replaced
+        "400":
+          description: invalid file name
+        "401":
+          description: Authorization header missing
+        "403":
+          description: Authorization header present but token does not match TESTTAKER_TOKEN
+        "500":
+          description: the file could not be imported (e.g. it is not valid)
+    delete:
+      summary: delete a Testtakers file
+      description: >
+        Deletes the Testtakers file `{filename}` of the workspace together with its logins.
+        Counterpart of the PUT above for external systems such as the TBA-Portal.
+      tags:
+        - portal integration
+      parameters:
+        - in: header
+          name: Authorization
+          description: >
+            static bearer token, configured via the `TESTTAKER_TOKEN` environment variable
+            (not a session AuthToken as used elsewhere in this API)
+          example: "Bearer Ship4ae2aesai3quasuu"
+          required: true
+        - in: path
+          name: ws_id
+          description: workspace-id
+          example: 1
+          required: true
+          schema:
+            type: integer
+        - in: path
+          name: filename
+          description: name of the Testtakers file
+          example: "541.xml"
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: file was deleted
+        "401":
+          description: Authorization header missing
+        "403":
+          description: Authorization header present but token does not match TESTTAKER_TOKEN
+        "404":
+          description: no Testtakers file of this name in the workspace
+        "500":
+          description: the file could not be deleted (e.g. it is still in use)
+
   /workspace/{ws_id}/test-ids:
     get:
       summary: get all test-ids of a workspace

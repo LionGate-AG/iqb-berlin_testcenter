@@ -480,6 +480,11 @@ paths:
               properties:
                 code:
                   type: string
+                keepExistingToken:
+                  type: boolean
+                  description: >
+                    optional, default false. true reuses the token of an existing person session instead of
+                    issuing a new one, so that a second login does not end the session of the first.
             example:
               code: 'xxx'
 
