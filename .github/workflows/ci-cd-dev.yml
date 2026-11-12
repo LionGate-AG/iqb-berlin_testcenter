@@ -2,7 +2,8 @@ name: CI/CD (dev)
 
 # Runs on every push to dev (a merged pull request is a push). Builds the four testcenter images with a
 # dev-<sha> tag, writes that tag into fwu-infrastruktur (tba-portal-scalable/values-dev.yaml) so ArgoCD
-# deploys it to tc-dev, and keeps the 2 newest dev-* versions per package.
+# deploys it to tc-dev, and keeps the 2 newest dev-* versions per package plus every dev-* tag that
+# values-test.yaml still references.
 # The portal images (and orphan cleanup) are handled by the dev pipeline of iqb-berlin_tba-portal_BY.
 on:
   push:
@@ -19,6 +20,8 @@ env:
   INFRA_REPO: LionGate-AG/fwu-infrastruktur
   INFRA_REF: main
   INFRA_VALUES: tba-portal-scalable/values-dev.yaml
+  # The test environment's values: the cleanup keeps every dev-* image that test still references.
+  INFRA_TEST_VALUES: tba-portal-scalable/values-test.yaml
 
 jobs:
   # ── Compute a single tag shared across all build jobs ──────────────────────
@@ -169,7 +172,7 @@ jobs:
           - tc-broadcaster
           - tc-file-server
     steps:
-      - name: Cleanup old versions (only dev-* versions, keep 2 newest + the one just built)
+      - name: Cleanup old versions (only dev-* versions, keep 2 newest + the one just built + the ones test uses)
         env:
           GH_TOKEN: ${{ secrets.NPM_TOKEN }}
           OWNER: liongate-ag
@@ -193,13 +196,24 @@ jobs:
           #     to an existing version when the content is identical, and created_at stays at
           #     the first push, so that version can rank outside the newest 2 even though it
           #     is exactly what ArgoCD is about to deploy.
-          delete_ids=$(echo "$versions" | jq -r --arg cur "$TAG" '
+          #   - every version carrying a dev-<sha> tag that values-test.yaml on the infra repo's main references.
+          #     Test is promoted from dev and keeps running that tag, so deleting it breaks every fresh pull
+          #     there (e.g. the seed Job) as soon as 2 newer dev builds exist. The file is read before anything
+          #     is deleted; if it cannot be read the step fails instead of deleting without this protection.
+          test_values=$(gh api -H "Accept: application/vnd.github.raw+json" \
+            "repos/${INFRA_REPO}/contents/${INFRA_TEST_VALUES}?ref=${INFRA_REF}")
+          test_tags=$(echo "$test_values" | grep -oE 'dev-[0-9a-f]{7}' | sort -u | jq -R . | jq -s . || true)
+          [ -n "$test_tags" ] || test_tags='[]'
+          echo "Tags kept because test references them: $(echo "$test_tags" | jq -c .)"
+
+          delete_ids=$(echo "$versions" | jq -r --arg cur "$TAG" --argjson test "$test_tags" '
             def tags: .metadata.container.tags // [];
             [.[] | select(tags | (length > 0) and all(startswith("dev-")))] as $dev
             | ($dev | sort_by(.created_at) | reverse | .[0:2] | map(.id)) as $newest
             | $dev[]
             | select((.id | IN($newest[])) | not)
             | select((tags | index($cur)) | not)
+            | select((tags | any(. as $t | $test | index($t))) | not)
             | .id
           ')
 
