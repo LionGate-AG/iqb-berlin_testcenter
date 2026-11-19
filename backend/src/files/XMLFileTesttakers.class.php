@@ -268,6 +268,13 @@ class XMLFileTesttakers extends XMLFile {
 
     $viewSettings = $this->parseViewSettings($loginElement);
 
+    // TBA-Portal (SKNRW-874): the group monitor is the teacher's view of the group and must work before and after the
+    // Testzeitraum (e.g. to look at the Testheft in advance). The time window of the group only applies to testees.
+    $isMonitor = ($mode === 'monitor-group');
+    $validTo = (!$isMonitor and isset($groupElement['validTo'])) ? TimeStamp::fromXMLFormat((string) $groupElement['validTo']) : 0;
+    $validFrom = $isMonitor ? 0 : TimeStamp::fromXMLFormat((string) $groupElement['validFrom']);
+    $validFor = $isMonitor ? 0 : (int) ($groupElement['validFor'] ?? 0);
+
     return new Login(
       $name,
       (string) $loginElement['pw'],
@@ -276,9 +283,9 @@ class XMLFileTesttakers extends XMLFile {
       (string) $groupElement['label'] ?? (string) $groupElement['id'],
       $codes2Booklets,
       $workspaceId,
-      isset($groupElement['validTo']) ? TimeStamp::fromXMLFormat((string) $groupElement['validTo']) : 0,
-      TimeStamp::fromXMLFormat((string) $groupElement['validFrom']),
-      (int) ($groupElement['validFor'] ?? 0),
+      $validTo,
+      $validFrom,
+      $validFor,
       // Read once per file instead of once per login: each call is an XPath query over the whole document, which
       // made getAllLogins() take minutes for a file with 100,000 logins. Cloned, so every Login keeps its own copy.
       clone ($this->customTextsOfFile ??= $this->getCustomTexts()),
