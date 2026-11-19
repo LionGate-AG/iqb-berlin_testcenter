@@ -309,6 +309,35 @@ END;
     $this->assertEquals($expected, $xmlFile->getAssetAssignments());
   }
 
+  function test_getAllLogins_monitorGroupIgnoresGroupTimeWindow() {
+    $xml = <<<END
+<Testtakers xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                  xsi:noNamespaceSchemaLocation="https://w3id.org/iqb/spec/testcenter-testtaker-xml/18.0">
+  <Metadata>
+    <Description>time window</Description>
+  </Metadata>
+  <Group id="g1" label="Group 1" validFrom="1/1/2030 12:00" validTo="2/1/2030 12:00" validFor="45">
+    <Login mode="monitor-group" name="monitor" pw="secret"/>
+    <Login mode="run-hot-return" name="testee" pw="secret">
+      <Booklet codes="abc">BOOKLET.SAMPLE-1</Booklet>
+    </Login>
+  </Group>
+</Testtakers>
+END;
+    $logins = [];
+    foreach (XMLFileTesttakers::fromString($xml)->getAllLogins() as $login) {
+      $logins[$login->getName()] = $login;
+    }
+
+    $this->assertSame(0, $logins['monitor']->getValidFrom());
+    $this->assertSame(0, $logins['monitor']->getValidTo());
+    $this->assertSame(0, $logins['monitor']->getValidForMinutes());
+
+    $this->assertSame(TimeStamp::fromXMLFormat('1/1/2030 12:00'), $logins['testee']->getValidFrom());
+    $this->assertSame(TimeStamp::fromXMLFormat('2/1/2030 12:00'), $logins['testee']->getValidTo());
+    $this->assertSame(45, $logins['testee']->getValidForMinutes());
+  }
+
   function test_getAllLogins() {
     TestEnvironment::makeRandomStatic();
     $xmlFile = new XMLFileTesttakers(DATA_DIR . '/ws_1/Testtakers/SAMPLE_TESTTAKERS.XML');
@@ -387,6 +416,7 @@ END;
           ]
         ]
       ),
+      // monitor-group logins carry no time window of the group (SKNRW-874)
       new Login(
         'test-group-monitor',
         'user123',
@@ -402,7 +432,7 @@ END;
         ],
         -1,
         0,
-        1583053200,
+        0,
         0,
         (object) ["somestr" => "string"]
       ),
@@ -422,7 +452,7 @@ END;
 
         -1,
         0,
-        1583053200,
+        0,
         0,
         (object) ["somestr" => "string"],
         [
@@ -607,7 +637,7 @@ END;
         'An already expired group',
         ['' => ['BOOKLET.SAMPLE-1']],
         -1,
-        1583087400,
+        0,
         0,
         0,
         (object) ["somestr" => "string"]
