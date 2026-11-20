@@ -58,7 +58,7 @@ jobs:
           - image: tc-backend
             dockerfile: backend/Dockerfile
             target: prod
-            build-args: PHP_VERSION=8.3.36-fpm-bookworm
+            build-args: PHP_VERSION=8.3.37-fpm-bookworm
 
           - image: tc-broadcaster
             dockerfile: broadcaster/Dockerfile
